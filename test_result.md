@@ -524,3 +524,41 @@ frontend_v7:
     file: "app/page.js"
     working: true
     comment: "Nav 'Profiles' -> ProfilesView. Detect by link/username/id. Header (avatar, displayName, @name, verified badge, joined, description). Tabs: Items (sub-tabs Limiteds w/ RAP+serial | Regular w/ category), Game Passes (icon+price), Account Info. Renders + empty-input validation verified via screenshots; data timing verified fast."
+
+## ===== UPDATE 8: Profiles moved to Admin + Total RAP + RAP history graph =====
+backend_v8:
+  - task: "GET /api/profile/:id/rap-history (total account RAP over time)"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New endpoint. Sums per-item Roblox economy resale-data priceDataPoints (real RAP time-series, no key) across the account's limiteds to build a TOTAL account RAP over the last 12 months. Tracks top 30 holdings by RAP in detail; remaining limiteds contribute current RAP flat so latest-month total ~= totalRap. Returns {totalRap, count, tracked, history:[{month:'YYYY-MM', rap}]}. On error/private returns {totalRap:0,count:0,tracked:0,history:[],private:true} with HTTP 200 (graceful). Regression: /profile/lookup, /profile/:id/limiteds, /items, /gamepasses unchanged."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All 5 test steps completed successfully. (1) User lookup: Resolved 'builderman' -> id=156. (2) rap-history endpoint: Returns HTTP 200 with all required keys (totalRap=13971244, count=48, tracked=30, history with 12 entries). All history entries have correct format (month='YYYY-MM', rap=number). (3) Cross-check: totalRap matches exactly with sum of RAP from /limiteds endpoint (difference: 0, 0.00%). (4) Graceful handling: Nonexistent user (999999999999) returns HTTP 200 with empty history and private=true flag (no 500 error). (5) Regression: All existing endpoints return HTTP 200 (/profile/lookup, /profile/:id/limiteds, /profile/:id/gamepasses). No critical issues found."
+
+frontend_v8:
+  - task: "Profile Importer moved into Admin Console (admin-only)"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Removed public 'Profiles' nav button and public 'profiles' route. ProfilesView now rendered inside AdminView as a 'Profiles' tab (embedded prop trims outer padding). Only reachable by admins via Admin Console. Main-agent verified via Playwright: public nav has no Profiles; after admin login the 'Profiles' tab exists and Detect works."
+  - task: "Account Info: Total RAP headline + RAP history area chart"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Account Info tab shows 3 headline cards (Total RAP, Limiteds count, 12-mo Trend %) and a recharts AreaChart of total RAP over the last 12 months from /profile/:id/rap-history. Main-agent verified via Playwright: 'Total RAP' card text renders after Detect (get_by_text wait succeeded). Note: dev-server 512MB memory cap causes periodic SPA reloads that interrupt final screenshots (env quirk, not a code bug)."
+
+agent_communication:
+    -agent: "main"
+    -message: "UPDATE 8 backend test needed for the NEW endpoint only: GET /api/profile/:id/rap-history. This is a PUBLIC endpoint (no auth). (1) First resolve a real public user via GET /api/profile/lookup?input=roblox (or input=1 / builderman) to get a valid userId. (2) GET /api/profile/{userId}/rap-history -> expect HTTP 200 JSON with keys: totalRap (number>=0), count (number), tracked (number), history (array). If the account has public limiteds, history should have up to 12 entries each {month:'YYYY-MM', rap:number}. (3) For an account with NO limiteds or private inventory, it must still return HTTP 200 with history:[] (graceful, never 500). (4) Confirm totalRap roughly equals the sum of rap across GET /api/profile/{userId}/limiteds. Note: Roblox APIs can occasionally rate-limit/502 upstream - the endpoint should degrade gracefully to empty history, not crash. Do NOT modify code. Suggested test users likely to have limiteds: 'Roblox' (id 1) may not; try 'Linkmon99' or 'builderman'. Just verify structure + graceful handling."
+    -agent: "testing"
+    -message: "✅ UPDATE 8 BACKEND TESTING COMPLETE - ALL TESTS PASSED (5/5). Comprehensive testing completed for the new rap-history endpoint: (1) USER LOOKUP: Successfully resolved 'builderman' -> id=156 ✓ (2) RAP-HISTORY ENDPOINT: Returns HTTP 200 with all required keys (totalRap, count, tracked, history). Verified data types and formats - totalRap=13971244 (number), count=48 (int), tracked=30 (int), history array with 12 entries. All history entries have correct format: month='YYYY-MM' string, rap=number ✓ (3) CROSS-CHECK: totalRap from rap-history (13971244) matches EXACTLY with sum of RAP from /limiteds endpoint (difference: 0, 0.00%) ✓ (4) GRACEFUL HANDLING: Nonexistent user (999999999999) returns HTTP 200 with empty history:[] and private:true flag (no 500 error) ✓ (5) REGRESSION: All existing endpoints working - /profile/lookup, /profile/:id/limiteds, /profile/:id/gamepasses all return HTTP 200 ✓. No critical issues found. Backend UPDATE 8 is production-ready."

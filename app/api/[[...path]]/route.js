@@ -238,6 +238,46 @@ async function robloxGamePasses(userId) {
   }
   return { games: universes, passes }
 }
+// Build TOTAL account RAP over time by summing per-item Roblox resale-data priceDataPoints.
+// Roblox economy resale-data returns priceDataPoints:[{value,date}] (a real RAP time-series, no key needed).
+async function robloxRapHistory(userId, limitedsIn) {
+  const limiteds = limitedsIn || await robloxLimiteds(userId)
+  const totalRap = limiteds.reduce((s, it) => s + (Number(it.rap) || 0), 0)
+  // Track detailed history for the top holdings (by RAP) to keep request count bounded.
+  const withRap = limiteds.filter(it => Number(it.rap) > 0)
+  const top = [...withRap].sort((a, b) => b.rap - a.rap).slice(0, 30)
+  const topIds = new Set(top.map(it => it.assetId))
+  const restCurrent = withRap.filter(it => !topIds.has(it.assetId)).reduce((s, it) => s + (Number(it.rap) || 0), 0)
+
+  const results = await Promise.allSettled(top.map(it =>
+    robloxGetJson(`https://economy.roblox.com/v1/assets/${it.assetId}/resale-data`)))
+  const perItem = results.map((r, i) => {
+    const monthly = {}
+    if (r.status === 'fulfilled') {
+      (r.value.priceDataPoints || []).forEach(p => { if (p && p.date) monthly[String(p.date).slice(0, 7)] = Number(p.value) || 0 })
+    }
+    return { current: Number(top[i].rap) || 0, monthly }
+  })
+
+  // Last 12 month buckets (YYYY-MM)
+  const months = []
+  const now = new Date()
+  for (let k = 11; k >= 0; k--) { const d = new Date(now.getFullYear(), now.getMonth() - k, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`) }
+
+  const history = months.map(mo => {
+    let total = restCurrent // items without detailed history contribute their current RAP flat
+    perItem.forEach(item => {
+      const keys = Object.keys(item.monthly).filter(k => k <= mo).sort()
+      if (keys.length) total += item.monthly[keys[keys.length - 1]]
+      else {
+        const all = Object.keys(item.monthly).sort()
+        total += all.length ? item.monthly[all[0]] : item.current
+      }
+    })
+    return { month: mo, rap: Math.round(total) }
+  })
+  return { totalRap: Math.round(totalRap), count: limiteds.length, tracked: top.length, history }
+}
 
 // ---------------- Seed ----------------
 const ITEM_IMAGES = [
@@ -346,6 +386,10 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/profile/') && path[2] === 'gamepasses' && method === 'GET') {
       try { return json(await robloxGamePasses(path[1])) }
       catch (e) { return json({ games: [], passes: [] }) }
+    }
+    if (route.startsWith('/profile/') && path[2] === 'rap-history' && method === 'GET') {
+      try { return json(await robloxRapHistory(path[1])) }
+      catch (e) { return json({ totalRap: 0, count: 0, tracked: 0, history: [], private: true }) }
     }
 
     // ---------- AUTH ----------

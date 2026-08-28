@@ -14,8 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
-  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar
+  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins
 } from 'lucide-react'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
 const ROBUX_RATE = 80
 const CATEGORIES = ['All', 'Limiteds', 'Accessories', 'UGC', 'Collectibles', 'Gear', 'Faces', 'Bundles']
@@ -139,7 +140,6 @@ export default function App() {
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse')}>Browse</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse', { category: 'Limiteds' })}>Limiteds</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('sellers')}>Sellers</Button>
-            <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('profiles')}>Profiles</Button>
             {user?.isAdmin && <Button variant="ghost" className="text-fuchsia-300 hover:text-fuchsia-200" onClick={() => go('admin')}>Admin</Button>}
           </nav>
           <div className="flex-1" />
@@ -171,7 +171,6 @@ export default function App() {
         {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} />}
         {view.name === 'seller' && <SellerView api={api} go={go} name={view.username} />}
         {view.name === 'sellers' && <SellersView api={api} go={go} />}
-        {view.name === 'profiles' && <ProfilesView api={api} />}
         {view.name === 'dashboard' && (user ? <DashboardView api={api} go={go} user={user} /> : <EmptyAuth onLogin={() => { setAuthMode('login'); setAuthOpen(true) }} />)}
         {view.name === 'admin' && <AdminView api={api} user={user} go={go} cfg={cfg} />}
       </main>
@@ -641,17 +640,18 @@ function SellersView({ api, go }) {
 
 function Empty({ text }) { return <div className="py-16 text-center text-slate-400"><Package className="w-10 h-10 mx-auto mb-3 opacity-40" />{text}</div> }
 
-function ProfilesView({ api }) {
+function ProfilesView({ api, embedded = false }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [profile, setProfile] = useState(null)
   const [limiteds, setLimiteds] = useState(null)
   const [items, setItems] = useState(null)
   const [gp, setGp] = useState(null)
+  const [rapHist, setRapHist] = useState(null)
 
   const lookup = async () => {
     if (!input.trim()) { toast.error('Enter a Roblox username, ID, or profile link'); return }
-    setLoading(true); setProfile(null); setLimiteds(null); setItems(null); setGp(null)
+    setLoading(true); setProfile(null); setLimiteds(null); setItems(null); setGp(null); setRapHist(null)
     try {
       const d = await api(`/profile/lookup?input=${encodeURIComponent(input.trim())}`)
       setProfile(d.profile)
@@ -659,12 +659,15 @@ function ProfilesView({ api }) {
       api(`/profile/${uid}/limiteds`).then(r => setLimiteds(r)).catch(() => setLimiteds({ limiteds: [], private: true }))
       api(`/profile/${uid}/items`).then(r => setItems(r)).catch(() => setItems({ items: [], private: true }))
       api(`/profile/${uid}/gamepasses`).then(r => setGp(r)).catch(() => setGp({ passes: [] }))
+      api(`/profile/${uid}/rap-history`).then(r => setRapHist(r)).catch(() => setRapHist({ totalRap: 0, history: [] }))
     } catch (e) { toast.error(e.message) } finally { setLoading(false) }
   }
 
+  const monthLabel = (m) => { const [y, mo] = m.split('-'); return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) }
+
   return (
-    <div className="container mx-auto px-4 py-8 max-w-5xl">
-      <h1 className="text-3xl font-black mb-2 flex items-center gap-2"><User className="w-7 h-7 text-violet-400" /> Roblox Profiles</h1>
+    <div className={embedded ? '' : 'container mx-auto px-4 py-8 max-w-5xl'}>
+      {!embedded && <h1 className="text-3xl font-black mb-2 flex items-center gap-2"><User className="w-7 h-7 text-violet-400" /> Roblox Profiles</h1>}
       <p className="text-slate-400 mb-5">Paste a Roblox profile link, username, or user ID to view their limiteds, items, game passes & account info.</p>
       <div className="flex gap-2 mb-8">
         <div className="relative flex-1">
@@ -749,12 +752,79 @@ function ProfilesView({ api }) {
             </TabsContent>
 
             <TabsContent value="info" className="mt-5">
-              <Card className="p-6 bg-[#12101f]/60 border-white/5 max-w-2xl">
-                {[['User ID', profile.id], ['Username', '@' + profile.name], ['Display Name', profile.displayName], ['Account Created', new Date(profile.created).toLocaleString()], ['Verified Badge', profile.hasVerifiedBadge ? 'Yes' : 'No'], ['Banned', profile.isBanned ? 'Yes' : 'No']].map(([k, v]) => (
-                  <div key={k} className="flex justify-between py-2.5 border-b border-white/5 last:border-0"><span className="text-slate-400">{k}</span><span className="font-semibold">{String(v)}</span></div>
-                ))}
-                <div className="pt-3"><p className="text-slate-400 mb-1">Description</p><p className="text-sm text-slate-300 whitespace-pre-line">{profile.description || 'No description.'}</p></div>
-              </Card>
+              {(() => {
+                const localTotal = limiteds?.limiteds ? limiteds.limiteds.reduce((s, it) => s + (Number(it.rap) || 0), 0) : 0
+                const totalRap = (rapHist && rapHist.totalRap) ? rapHist.totalRap : localTotal
+                const limCount = limiteds?.limiteds ? limiteds.limiteds.length : (rapHist?.count || 0)
+                const hist = rapHist?.history || []
+                const first = hist.length ? hist[0].rap : null
+                const last = hist.length ? hist[hist.length - 1].rap : null
+                const delta = (first != null && last != null && first > 0) ? ((last - first) / first) * 100 : null
+                return (
+                  <div className="space-y-6">
+                    {/* Headline stats */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <Card className="p-5 bg-gradient-to-br from-emerald-500/10 to-transparent border-emerald-500/20">
+                        <p className="text-[11px] uppercase tracking-widest text-emerald-300/70 font-bold flex items-center gap-1"><Coins className="w-3.5 h-3.5" /> Total RAP</p>
+                        <p className="text-3xl font-black text-emerald-400 mt-1">{totalRap.toLocaleString()}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">across {limCount} limited{limCount === 1 ? '' : 's'}</p>
+                      </Card>
+                      <Card className="p-5 bg-[#12101f]/60 border-white/5">
+                        <p className="text-[11px] uppercase tracking-widest text-slate-400 font-bold flex items-center gap-1"><Gem className="w-3.5 h-3.5" /> Limiteds</p>
+                        <p className="text-3xl font-black text-violet-300 mt-1">{limCount.toLocaleString()}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">collectible items held</p>
+                      </Card>
+                      <Card className="p-5 bg-[#12101f]/60 border-white/5">
+                        <p className="text-[11px] uppercase tracking-widest text-slate-400 font-bold flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5" /> 12-mo Trend</p>
+                        <p className={`text-3xl font-black mt-1 ${delta == null ? 'text-slate-400' : delta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{delta == null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">total RAP change</p>
+                      </Card>
+                    </div>
+
+                    {/* RAP history graph */}
+                    <Card className="p-5 bg-[#12101f]/60 border-white/5">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <p className="font-bold flex items-center gap-2"><TrendingUp className="w-4 h-4 text-emerald-400" /> Total RAP History</p>
+                          <p className="text-xs text-slate-500">Account value over the last 12 months{rapHist?.tracked ? ` · tracking top ${rapHist.tracked} holdings` : ''}</p>
+                        </div>
+                      </div>
+                      {!rapHist ? <div className="h-64 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-emerald-400" /></div>
+                        : hist.length === 0 ? <div className="h-64"><Empty text="No RAP history available for this account." /></div>
+                        : (
+                          <div className="h-64 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={hist.map(h => ({ ...h, label: monthLabel(h.month) }))} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                                <defs>
+                                  <linearGradient id="rapFill" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.5} />
+                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                                <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                                <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={55} tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v} />
+                                <RTooltip
+                                  contentStyle={{ background: '#12101f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#e2e8f0' }}
+                                  labelStyle={{ color: '#94a3b8' }}
+                                  formatter={(v) => [`${Number(v).toLocaleString()} RAP`, 'Total RAP']}
+                                />
+                                <Area type="monotone" dataKey="rap" stroke="#10b981" strokeWidth={2.5} fill="url(#rapFill)" />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                    </Card>
+
+                    <Card className="p-6 bg-[#12101f]/60 border-white/5 max-w-2xl">
+                      {[['User ID', profile.id], ['Username', '@' + profile.name], ['Display Name', profile.displayName], ['Account Created', new Date(profile.created).toLocaleString()], ['Verified Badge', profile.hasVerifiedBadge ? 'Yes' : 'No'], ['Banned', profile.isBanned ? 'Yes' : 'No']].map(([k, v]) => (
+                        <div key={k} className="flex justify-between py-2.5 border-b border-white/5 last:border-0"><span className="text-slate-400">{k}</span><span className="font-semibold">{String(v)}</span></div>
+                      ))}
+                      <div className="pt-3"><p className="text-slate-400 mb-1">Description</p><p className="text-sm text-slate-300 whitespace-pre-line">{profile.description || 'No description.'}</p></div>
+                    </Card>
+                  </div>
+                )
+              })()}
             </TabsContent>
           </Tabs>
         </div>
@@ -853,7 +923,7 @@ function AdminView({ api, user, go, cfg }) {
         ))}
       </div>
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="bg-[#12101f] border border-white/5 flex-wrap h-auto"><TabsTrigger value="listings">Listings</TabsTrigger><TabsTrigger value="items">Items</TabsTrigger><TabsTrigger value="orders">Transactions</TabsTrigger><TabsTrigger value="users">Users</TabsTrigger><TabsTrigger value="reports">Reports</TabsTrigger></TabsList>
+        <TabsList className="bg-[#12101f] border border-white/5 flex-wrap h-auto"><TabsTrigger value="listings">Listings</TabsTrigger><TabsTrigger value="items">Items</TabsTrigger><TabsTrigger value="orders">Transactions</TabsTrigger><TabsTrigger value="users">Users</TabsTrigger><TabsTrigger value="reports">Reports</TabsTrigger><TabsTrigger value="profiles"><User className="w-3.5 h-3.5 mr-1" /> Profiles</TabsTrigger></TabsList>
 
         <TabsContent value="listings" className="mt-4 space-y-2">
           {listings.length === 0 && <Empty text="No listings yet. Click 'Import from Roblox' to add one." />}
@@ -908,6 +978,14 @@ function AdminView({ api, user, go, cfg }) {
               {r.status === 'open' && <Button size="sm" onClick={() => resolveReport(r.id)}>Resolve</Button>}
             </Card>
           ))}
+        </TabsContent>
+
+        <TabsContent value="profiles" className="mt-6">
+          <div className="mb-4 flex items-center gap-2">
+            <User className="w-5 h-5 text-violet-400" />
+            <h2 className="text-xl font-black">Roblox Profile Importer</h2>
+          </div>
+          <ProfilesView api={api} embedded />
         </TabsContent>
       </Tabs>
 
