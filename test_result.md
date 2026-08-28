@@ -512,3 +512,15 @@ agent_communication:
     -message: "Verify the admin Roblox import flow in-browser (user reported 'request failed'). NOTE: dev hydration is slow (~12-16s) - wait generously. Steps: (1) Load site (opens on Browse, currently EMPTY marketplace). (2) Login via 'Login' button with admin@robloot.com / roblootdevtomo -> should land on Admin Console. (3) Click 'Import from Roblox'. (4) In the link field type: https://www.roblox.com/catalog/20573078/Shaggy and click 'Detect'. EXPECT: a success toast and the form auto-fills Name='Shaggy', a Description, an Image preview (real tr.rbxcdn.com image), RAP and Robux value fields populated. Price field must be EMPTY (manual). (5) Set Stock=3 and Your Price (USD)=12.50, then click 'List on Marketplace'. EXPECT success toast + dialog closes. (6) Go to Browse -> the 'Shaggy' item appears in All Listings WITH the real Roblox image (not blank), showing '3 left' and 'From $12.50'. Capture any console errors and the exact text of any error toast. Report the network response status for POST /api/admin/roblox-lookup."
     -agent: "testing"
     -message: "✅ IMPORT FROM ROBLOX FLOW - FULLY WORKING. Comprehensive end-to-end testing completed. The user's reported 'request failed' issue is NOT reproducible. API returns HTTP 200 with valid Roblox data, form auto-fills correctly with real image from tr.rbxcdn.com, listing is created successfully, and item appears in Browse with the real Roblox image. All 8 test steps passed without errors. The issue was likely temporary (Roblox API downtime, user's network, or stale cache). Current implementation is production-ready and robust."
+
+## ===== UPDATE 7: Roblox Profiles feature =====
+backend_v7:
+  - task: "Public Roblox profile endpoints"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    comment: "GET /api/profile/lookup?input= (username|id|url) -> resolves + info + avatar + headshot. GET /api/profile/:id/limiteds (collectibles w/ RAP + thumbs). GET /api/profile/:id/items (regular inventory across 12 asset types + thumbs). GET /api/profile/:id/gamepasses (public created universes -> passes + icons). No API key needed for public accounts. VERIFIED via browser client: lookup 716ms, limiteds 48 items RAP present."
+frontend_v7:
+  - task: "Profiles page (nav + 3 tabs)"
+    file: "app/page.js"
+    working: true
+    comment: "Nav 'Profiles' -> ProfilesView. Detect by link/username/id. Header (avatar, displayName, @name, verified badge, joined, description). Tabs: Items (sub-tabs Limiteds w/ RAP+serial | Regular w/ category), Game Passes (icon+price), Account Info. Renders + empty-input validation verified via screenshots; data timing verified fast."

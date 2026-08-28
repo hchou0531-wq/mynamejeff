@@ -168,6 +168,77 @@ async function robloxLookup(input) {
   return { assetId, name, description, imageUrl, lowestResalePrice, rap, collectibleItemId }
 }
 
+// ---------------- Roblox USER profiles ----------------
+function parseRobloxUserRef(input) {
+  const s = String(input || '').trim()
+  const m = s.match(/users\/(\d+)/i)
+  if (m) return { userId: Number(m[1]) }
+  if (/^\d+$/.test(s)) return { userId: Number(s) }
+  const uname = s.replace(/^@/, '').replace(/^https?:\/\/[^/]+\//, '').split(/[/?#]/)[0]
+  return { username: uname || s }
+}
+async function robloxAssetThumbs(ids) {
+  const map = {}
+  const uniq = [...new Set(ids.filter(Boolean))]
+  for (let i = 0; i < uniq.length; i += 100) {
+    const chunk = uniq.slice(i, i + 100)
+    try { const t = await robloxGetJson(`https://thumbnails.roblox.com/v1/assets?assetIds=${chunk.join(',')}&size=150x150&format=Png&isCircular=false`); (t.data || []).forEach(d => { map[d.targetId] = d.imageUrl }) } catch (e) {}
+  }
+  return map
+}
+async function robloxProfile(input) {
+  const ref = parseRobloxUserRef(input)
+  let userId = ref.userId
+  if (!userId) {
+    const r = await robloxGetJson('https://users.roblox.com/v1/usernames/users', { method: 'POST', body: JSON.stringify({ usernames: [ref.username], excludeBannedUsers: false }) })
+    const u = r && r.data && r.data[0]
+    if (!u) throw new Error('Roblox user not found')
+    userId = u.id
+  }
+  const [info, avatar, head] = await Promise.all([
+    robloxGetJson(`https://users.roblox.com/v1/users/${userId}`),
+    robloxGetJson(`https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=420x420&format=Png&isCircular=false`).catch(() => null),
+    robloxGetJson(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`).catch(() => null)
+  ])
+  return {
+    id: userId, name: info.name, displayName: info.displayName, description: info.description || '',
+    created: info.created, isBanned: !!info.isBanned, hasVerifiedBadge: !!info.hasVerifiedBadge,
+    avatarUrl: (avatar && avatar.data && avatar.data[0] && avatar.data[0].imageUrl) || null,
+    headshotUrl: (head && head.data && head.data[0] && head.data[0].imageUrl) || null
+  }
+}
+async function robloxLimiteds(userId) {
+  const r = await robloxGetJson(`https://inventory.roblox.com/v1/users/${userId}/assets/collectibles?limit=100&sortOrder=Desc`)
+  const data = r.data || []
+  const thumbs = await robloxAssetThumbs(data.map(d => d.assetId))
+  return data.map(d => ({ assetId: d.assetId, name: d.name, rap: d.recentAveragePrice, originalPrice: d.originalPrice, serialNumber: d.serialNumber, stock: d.assetStock, imageUrl: thumbs[d.assetId] || null }))
+}
+const REGULAR_TYPES = [[8, 'Hats'], [41, 'Hair'], [42, 'Face Accessories'], [43, 'Neck'], [44, 'Shoulder'], [45, 'Front'], [46, 'Back'], [47, 'Waist'], [18, 'Faces'], [19, 'Gear'], [11, 'Shirts'], [12, 'Pants']]
+async function robloxRegularItems(userId) {
+  const results = await Promise.allSettled(REGULAR_TYPES.map(([tid]) => robloxGetJson(`https://inventory.roblox.com/v2/users/${userId}/inventory/${tid}?limit=25&sortOrder=Desc`)))
+  const items = []
+  results.forEach((res, idx) => { if (res.status === 'fulfilled') { (res.value.data || []).forEach(d => items.push({ assetId: d.assetId, name: d.assetName, category: REGULAR_TYPES[idx][1] })) } })
+  const thumbs = await robloxAssetThumbs(items.map(i => i.assetId))
+  return items.map(i => ({ ...i, imageUrl: thumbs[i.assetId] || null }))
+}
+async function robloxGamePasses(userId) {
+  let universes = []
+  try { const g = await robloxGetJson(`https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=25&sortOrder=Asc`); universes = (g.data || []).map(x => ({ id: x.id, name: x.name })) } catch (e) {}
+  const uni = universes.slice(0, 8)
+  const passes = []
+  const res = await Promise.allSettled(uni.map(u => robloxGetJson(`https://games.roblox.com/v1/games/${u.id}/game-passes?limit=100&sortOrder=Asc`)))
+  res.forEach((r, idx) => { if (r.status === 'fulfilled') { (r.value.data || []).forEach(p => passes.push({ id: p.id, name: p.name, price: p.price ?? null, universe: uni[idx].name })) } })
+  if (passes.length) {
+    const map = {}
+    for (let i = 0; i < passes.length; i += 100) {
+      const chunk = passes.slice(i, i + 100)
+      try { const t = await robloxGetJson(`https://thumbnails.roblox.com/v1/game-passes?gamePassIds=${chunk.map(p => p.id).join(',')}&size=150x150&format=Png`); (t.data || []).forEach(d => { map[d.targetId] = d.imageUrl }) } catch (e) {}
+    }
+    passes.forEach(p => { p.imageUrl = map[p.id] || null })
+  }
+  return { games: universes, passes }
+}
+
 // ---------------- Seed ----------------
 const ITEM_IMAGES = [
   'https://images.unsplash.com/photo-1665041982909-8a86864a1e49?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxnYW1pbmclMjBjb2xsZWN0aWJsZXxlbnwwfHx8fDE3ODc5MzAzNzJ8MA&ixlib=rb-4.1.0&q=85',
@@ -256,6 +327,26 @@ async function handleRoute(request, { params }) {
     if (route === '/' || route === '/root') return json({ message: 'Robloot Marketplace API' })
     if (route === '/seed' && method === 'POST') return json(await doSeed(db, true))
     if (route === '/config' && method === 'GET') return json({ cryptoConfigured: coingateConfigured(), receiveCurrency: process.env.COINGATE_RECEIVE_CURRENCY || 'USDT' })
+
+    // ---------- ROBLOX PROFILES (public) ----------
+    if (route === '/profile/lookup' && method === 'GET') {
+      const input = q.get('input')
+      if (!input) return json({ error: 'Enter a Roblox username, ID, or profile link' }, 400)
+      try { return json({ profile: await robloxProfile(input) }) }
+      catch (e) { return json({ error: e.message || 'Lookup failed' }, 502) }
+    }
+    if (route.startsWith('/profile/') && path[2] === 'limiteds' && method === 'GET') {
+      try { return json({ limiteds: await robloxLimiteds(path[1]) }) }
+      catch (e) { return json({ limiteds: [], private: true, error: 'Inventory is private or unavailable' }) }
+    }
+    if (route.startsWith('/profile/') && path[2] === 'items' && method === 'GET') {
+      try { const items = await robloxRegularItems(path[1]); return json({ items, private: items.length === 0 }) }
+      catch (e) { return json({ items: [], private: true }) }
+    }
+    if (route.startsWith('/profile/') && path[2] === 'gamepasses' && method === 'GET') {
+      try { return json(await robloxGamePasses(path[1])) }
+      catch (e) { return json({ games: [], passes: [] }) }
+    }
 
     // ---------- AUTH ----------
     if (route === '/auth/signup' && method === 'POST') {

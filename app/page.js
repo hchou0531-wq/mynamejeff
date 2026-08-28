@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
-  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2
+  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar
 } from 'lucide-react'
 
 const ROBUX_RATE = 80
@@ -139,6 +139,7 @@ export default function App() {
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse')}>Browse</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse', { category: 'Limiteds' })}>Limiteds</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('sellers')}>Sellers</Button>
+            <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('profiles')}>Profiles</Button>
             {user?.isAdmin && <Button variant="ghost" className="text-fuchsia-300 hover:text-fuchsia-200" onClick={() => go('admin')}>Admin</Button>}
           </nav>
           <div className="flex-1" />
@@ -170,6 +171,7 @@ export default function App() {
         {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} />}
         {view.name === 'seller' && <SellerView api={api} go={go} name={view.username} />}
         {view.name === 'sellers' && <SellersView api={api} go={go} />}
+        {view.name === 'profiles' && <ProfilesView api={api} />}
         {view.name === 'dashboard' && (user ? <DashboardView api={api} go={go} user={user} /> : <EmptyAuth onLogin={() => { setAuthMode('login'); setAuthOpen(true) }} />)}
         {view.name === 'admin' && <AdminView api={api} user={user} go={go} cfg={cfg} />}
       </main>
@@ -638,6 +640,128 @@ function SellersView({ api, go }) {
 }
 
 function Empty({ text }) { return <div className="py-16 text-center text-slate-400"><Package className="w-10 h-10 mx-auto mb-3 opacity-40" />{text}</div> }
+
+function ProfilesView({ api }) {
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [profile, setProfile] = useState(null)
+  const [limiteds, setLimiteds] = useState(null)
+  const [items, setItems] = useState(null)
+  const [gp, setGp] = useState(null)
+
+  const lookup = async () => {
+    if (!input.trim()) { toast.error('Enter a Roblox username, ID, or profile link'); return }
+    setLoading(true); setProfile(null); setLimiteds(null); setItems(null); setGp(null)
+    try {
+      const d = await api(`/profile/lookup?input=${encodeURIComponent(input.trim())}`)
+      setProfile(d.profile)
+      const uid = d.profile.id
+      api(`/profile/${uid}/limiteds`).then(r => setLimiteds(r)).catch(() => setLimiteds({ limiteds: [], private: true }))
+      api(`/profile/${uid}/items`).then(r => setItems(r)).catch(() => setItems({ items: [], private: true }))
+      api(`/profile/${uid}/gamepasses`).then(r => setGp(r)).catch(() => setGp({ passes: [] }))
+    } catch (e) { toast.error(e.message) } finally { setLoading(false) }
+  }
+
+  return (
+    <div className="container mx-auto px-4 py-8 max-w-5xl">
+      <h1 className="text-3xl font-black mb-2 flex items-center gap-2"><User className="w-7 h-7 text-violet-400" /> Roblox Profiles</h1>
+      <p className="text-slate-400 mb-5">Paste a Roblox profile link, username, or user ID to view their limiteds, items, game passes & account info.</p>
+      <div className="flex gap-2 mb-8">
+        <div className="relative flex-1">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+          <Input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && lookup()} placeholder="https://www.roblox.com/users/156/profile  ·  builderman  ·  156" className="pl-12 h-12 bg-[#0e0d16] border-white/10 rounded-xl" />
+        </div>
+        <Button onClick={lookup} disabled={loading} className="h-12 px-8 bg-gradient-to-r from-violet-500 to-fuchsia-600 font-bold rounded-xl">{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Detect'}</Button>
+      </div>
+
+      {profile && (
+        <div>
+          {/* Header */}
+          <Card className="p-6 bg-[#12101f]/60 border-white/5 mb-6 flex flex-col sm:flex-row gap-5 items-center sm:items-start">
+            <img src={profile.avatarUrl || profile.headshotUrl} className="w-28 h-28 rounded-2xl bg-white/5 object-cover" alt="" />
+            <div className="flex-1 text-center sm:text-left">
+              <div className="flex items-center gap-2 justify-center sm:justify-start">
+                <h2 className="text-2xl font-black">{profile.displayName}</h2>
+                {profile.hasVerifiedBadge && <BadgeCheck className="w-5 h-5 text-blue-400" />}
+                {profile.isBanned && <Badge className="bg-red-500/20 text-red-300 border-red-500/30">Banned</Badge>}
+              </div>
+              <p className="text-slate-400">@{profile.name} · ID {profile.id}</p>
+              <p className="text-xs text-slate-500 mt-1 flex items-center gap-1 justify-center sm:justify-start"><Calendar className="w-3 h-3" /> Joined {new Date(profile.created).toLocaleDateString()}</p>
+              {profile.description && <p className="text-sm text-slate-300 mt-3 max-w-2xl whitespace-pre-line">{profile.description}</p>}
+            </div>
+          </Card>
+
+          <Tabs defaultValue="items">
+            <TabsList className="bg-[#12101f] border border-white/5">
+              <TabsTrigger value="items"><Gem className="w-4 h-4 mr-1" /> Items</TabsTrigger>
+              <TabsTrigger value="gamepasses"><Gamepad2 className="w-4 h-4 mr-1" /> Game Passes</TabsTrigger>
+              <TabsTrigger value="info"><Info className="w-4 h-4 mr-1" /> Account Info</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="items" className="mt-5">
+              <Tabs defaultValue="limiteds">
+                <TabsList className="bg-black/30 border border-white/5">
+                  <TabsTrigger value="limiteds">Limiteds {limiteds?.limiteds ? `(${limiteds.limiteds.length})` : ''}</TabsTrigger>
+                  <TabsTrigger value="regular">Regular {items?.items ? `(${items.items.length})` : ''}</TabsTrigger>
+                </TabsList>
+                <TabsContent value="limiteds" className="mt-4">
+                  {!limiteds ? <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-violet-400" /></div>
+                    : limiteds.limiteds.length === 0 ? <Empty text={limiteds.private ? 'This account has no public limiteds (or inventory is private).' : 'No limiteds found.'} />
+                    : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+                        {limiteds.limiteds.map(it => (
+                          <Card key={it.assetId} className="overflow-hidden bg-[#0e0d16] border-white/5">
+                            <div className="aspect-square bg-white/[0.03]"><img src={it.imageUrl} className="w-full h-full object-cover" alt="" /></div>
+                            <div className="p-3"><p className="text-sm font-semibold truncate">{it.name}</p>
+                              <div className="flex justify-between items-center mt-1"><span className="text-[10px] uppercase text-slate-500">RAP</span><span className="text-sm font-bold text-emerald-400">{it.rap != null ? Number(it.rap).toLocaleString() : '—'}</span></div>
+                              {it.serialNumber && <p className="text-[10px] text-violet-300 mt-0.5">#{it.serialNumber}</p>}
+                            </div>
+                          </Card>
+                        ))}
+                      </div>}
+                </TabsContent>
+                <TabsContent value="regular" className="mt-4">
+                  {!items ? <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-violet-400" /></div>
+                    : items.items.length === 0 ? <Empty text="No public regular items (or inventory is private)." />
+                    : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                        {items.items.map(it => (
+                          <Card key={it.assetId} className="overflow-hidden bg-[#0e0d16] border-white/5">
+                            <div className="aspect-square bg-white/[0.03]"><img src={it.imageUrl} className="w-full h-full object-cover" alt="" /></div>
+                            <div className="p-2"><p className="text-xs font-semibold truncate">{it.name}</p><p className="text-[10px] text-slate-500">{it.category}</p></div>
+                          </Card>
+                        ))}
+                      </div>}
+                </TabsContent>
+              </Tabs>
+            </TabsContent>
+
+            <TabsContent value="gamepasses" className="mt-5">
+              {!gp ? <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-violet-400" /></div>
+                : (gp.passes || []).length === 0 ? <Empty text="No public game passes found for this account." />
+                : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {gp.passes.map(p => (
+                      <Card key={p.id} className="p-3 bg-[#0e0d16] border-white/5 flex items-center gap-3">
+                        <img src={p.imageUrl} className="w-12 h-12 rounded-lg object-cover bg-white/5" alt="" />
+                        <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate">{p.name}</p><p className="text-xs text-slate-500 truncate">{p.universe}</p></div>
+                        <span className="text-sm font-bold text-emerald-400 shrink-0">{p.price != null ? `${p.price} R$` : 'Free'}</span>
+                      </Card>
+                    ))}
+                  </div>}
+            </TabsContent>
+
+            <TabsContent value="info" className="mt-5">
+              <Card className="p-6 bg-[#12101f]/60 border-white/5 max-w-2xl">
+                {[['User ID', profile.id], ['Username', '@' + profile.name], ['Display Name', profile.displayName], ['Account Created', new Date(profile.created).toLocaleString()], ['Verified Badge', profile.hasVerifiedBadge ? 'Yes' : 'No'], ['Banned', profile.isBanned ? 'Yes' : 'No']].map(([k, v]) => (
+                  <div key={k} className="flex justify-between py-2.5 border-b border-white/5 last:border-0"><span className="text-slate-400">{k}</span><span className="font-semibold">{String(v)}</span></div>
+                ))}
+                <div className="pt-3"><p className="text-slate-400 mb-1">Description</p><p className="text-sm text-slate-300 whitespace-pre-line">{profile.description || 'No description.'}</p></div>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function DashboardView({ api, go, user }) {
   const [orders, setOrders] = useState([])
