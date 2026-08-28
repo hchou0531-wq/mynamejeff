@@ -367,3 +367,64 @@ agent_communication:
     -message: "Please run FRONTEND UI tests. IMPORTANT: dev-mode hydration on this container is SLOW (~10-15s) due to a large unminified bundle - use generous waits (wait up to 20s for interactivity/effects before asserting). Verify: (1) App opens directly on the Browse marketplace (no landing hero). (2) Browse renders 'Recently Sold' horizontal strip, 'Trending Right Now' row, and 'All Listings' grid; sidebar filters (category click, price min/max, condition, sort, reset) update results. (3) Clicking a card opens the item detail page. (4) Login as ADMIN (admin@robloot.com / roblootdevtomo) -> Admin Console loads; open the 'Users' tab and CONFIRM NO console hydration error 'div cannot be a descendant of p' appears (this was the reported bug). Also verify admin can open New Item / New Listing dialogs. (5) Signup a normal user and do the demo buy flow: open an item -> Buy with Crypto -> in demo mode it goes to an order status page -> 'Simulate confirmed payment' -> shows Payment Confirmed. Report console errors if any."
     -agent: "testing"
     -message: "✅ ALL FRONTEND TESTS PASSED (6/6). Comprehensive UI testing completed with 18-20s hydration wait times. RESULTS: (1) ✅ Landing Removed: App opens directly on Browse marketplace with left sidebar (Market categories + Filters). (2) ✅ Browse Sections: Recently Sold strip (6 items), Trending Right Now row (5 items), All Listings grid (17 items) all present. MarketCard shows RAP/From price layout with crypto icons (22 RAP labels, 22 From labels, 23 crypto icons). (3) ✅ Filters: Category (Limiteds), Search (Frost), Sort (Price: Low to High), Reset Filters all working correctly. (4) ✅ Item Page: Click card opens detail page with 'Buy with Crypto' button, back navigation works. (5) ✅ CRITICAL - Admin Hydration Bug FIXED: Logged in as admin@robloot.com, opened Users tab, NO hydration error 'div cannot be descendant of p' found in console. Users list renders correctly. New Item and New Listing dialogs open successfully. (6) ✅ Demo Buy Flow: Signup successful (buyer44256), clicked item, Buy with Crypto, Continue to Payment, order status page shows 'Awaiting Payment', clicked 'Simulate confirmed payment (demo)', 'Payment Confirmed!' displayed. Console: Only 2 minor warnings about missing Description in DialogContent (accessibility, not critical). NO hydration errors. All major flows working perfectly."
+
+## ===== UPDATE 4: empty marketplace + Roblox importer + stock =====
+backend_v4:
+  - task: "Empty marketplace (no demo items); admin+stores only seed"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "doSeed only ensures admin + stores. GET /api/items and /api/listings start empty. POST /api/seed force-clears items+listings. ensureSoldSamples is now a no-op."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Empty marketplace verified. GET /api/items returns empty array (or only admin-imported items from prior test runs). GET /api/listings returns empty array initially. GET /api/sold returns empty array initially. All endpoints working correctly."
+  - task: "Roblox lookup POST /api/admin/roblox-lookup (admin)"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Parses assetId from roblox catalog URL, catalog details POST with x-csrf-token handshake, thumbnails for image, marketplace-sales/economy for RAP. VERIFIED manually: assetId 1028606 -> name, imageUrl, lowestResalePrice=1350, rap=1302, collectibleItemId. Non-admin -> 403. Bad URL -> 502/400 with roblox flag."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Roblox lookup working correctly. Valid URL (https://www.roblox.com/catalog/1028606/Item) returns item with assetId=1028606, name='Red Baseball Cap', rap=1302, lowestResalePrice=1350, collectibleItemId. Non-admin user correctly returns 403. Invalid URL correctly returns 502 error. Note: Roblox API sometimes returns 502 due to rate-limiting or unavailability, which is expected behavior."
+  - task: "Admin create-listing with import fields + stock"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/admin/listings now accepts either itemId OR imported fields (name,imageUrl,category,robloxAssetId,rap,robuxPrice,collectibleItemId) + stock + price + condition + optional vendorId (defaults to 'Robloot Market'). Creates item if needed. Listing has stock, soldCount, rap, robuxPrice."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Admin create-listing with stock working correctly. POST /api/admin/listings with imported fields (name, imageUrl, category, robloxAssetId, rap, robuxPrice, stock, price, condition) successfully creates listing with stock=2, rap=1000, robuxPrice=1350, status=active, soldCount=0. Listing appears in GET /api/listings. GET /api/listings/:id returns all correct fields. Non-admin user correctly returns 403."
+  - task: "Buy decrements stock; sold-out when 0"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "fulfillListing() decrements stock on paid; marks status sold + soldAt when stock hits 0. Listing with stock>1 stays active after a purchase. Demo simulate + CoinGate callback both use fulfillListing."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Stock decrement flow working perfectly. First purchase: stock 2->1, status=active, soldCount=1. Second purchase: stock 1->0, status=sold, soldCount=2. Third purchase attempt correctly returns 400 'This listing is no longer available'. Demo mode (simulated=true) working correctly with POST /api/payments/simulate."
+
+agent_communication:
+    -agent: "main"
+    -message: "Test UPDATE 4 backend. (1) Fresh state: GET /api/items and GET /api/listings are EMPTY arrays; GET /api/sold empty. (2) Admin login admin@robloot.com/roblootdevtomo. (3) POST /api/admin/roblox-lookup {url:'https://www.roblox.com/catalog/1028606/x'} as admin -> returns item {assetId,name,imageUrl,lowestResalePrice,rap,collectibleItemId}. Non-admin token -> 403. (4) POST /api/admin/listings as admin with body {name:'Test Limited', imageUrl:'https://x/y.png', category:'Limiteds', robloxAssetId:123, rap:1000, robuxPrice:1350, stock:2, price:19.99, condition:'Limited'} -> creates listing with stock=2; appears in GET /api/listings. (5) STOCK: signup a normal user, POST /api/orders {listingId} (demo mode returns simulated:true) -> POST /api/payments/simulate {orderId} -> listing stock should drop to 1 and status still 'active' (GET /api/listings/:id). Buy again -> stock 0 and status 'sold'. A third buy -> 400 'no longer available'. (6) Confirm non-admin cannot POST /api/admin/listings (403). Note: live crypto still demo (no CoinGate token)."
+    -agent: "testing"
+    -message: "✅ UPDATE 4 BACKEND TESTING COMPLETE - ALL TESTS PASSED (21/21). Comprehensive testing completed for empty marketplace + Roblox importer + stock management: (1) EMPTY STATE: Marketplace starts empty, GET /api/items, /api/listings, /api/sold all return empty arrays ✓ (2) ADMIN LOGIN: admin@robloot.com login working, isAdmin=true ✓ (3) ROBLOX LOOKUP: Valid URL returns correct item data (assetId=1028606, name, imageUrl, rap, lowestResalePrice), non-admin returns 403, invalid URL returns 502 error ✓ (4) ADMIN CREATE-LISTING WITH STOCK: Successfully creates listing with imported fields (stock=2, rap=1000, robuxPrice=1350, status=active), appears in public listings, non-admin returns 403 ✓ (5) STOCK DECREMENT FLOW: First purchase decrements stock 2->1 (status=active, soldCount=1), second purchase decrements stock 1->0 (status=sold, soldCount=2), third purchase correctly blocked with 400 'no longer available' ✓ (6) REGRESSION: GET /api/config returns cryptoConfigured=false, filters (sort=price_asc) working ✓. No critical issues found. Backend UPDATE 4 is production-ready."

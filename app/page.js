@@ -306,6 +306,7 @@ function MarketCard({ listing, onOpen }) {
   return (
     <Card onClick={() => onOpen(listing)} className="group relative overflow-hidden bg-[#0e0d16] border border-white/[0.06] rounded-2xl hover:border-violet-500/40 hover:shadow-[0_8px_30px_-12px_rgba(139,92,246,0.45)] transition-all cursor-pointer">
       <div className="absolute top-3 right-3 z-10 w-7 h-7 rounded-lg bg-black/60 backdrop-blur flex items-center justify-center border border-white/10" title="Crypto accepted"><Bitcoin className="w-3.5 h-3.5 text-amber-400" /></div>
+      {typeof listing.stock === 'number' && listing.status === 'active' && <div className="absolute top-3 left-3 z-10 text-[10px] font-bold px-2 py-0.5 rounded-md bg-black/60 backdrop-blur border border-white/10 text-slate-300">{listing.stock} left</div>}
       <div className="p-4 pb-2">
         <div className="aspect-square rounded-xl overflow-hidden bg-gradient-to-b from-white/[0.04] to-transparent">
           <img src={listing.item.imageUrl} alt={listing.item.name} className="w-full h-full object-cover group-hover:scale-[1.06] transition-transform duration-500" />
@@ -314,7 +315,7 @@ function MarketCard({ listing, onOpen }) {
       <div className="px-4 pb-4">
         <p className="font-semibold text-sm text-center truncate mb-3">{listing.item.name}</p>
         <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-          <div><p className="text-[10px] uppercase tracking-widest text-slate-500">RAP</p><p className="text-sm font-bold text-slate-300">{rbx(listing.price)}</p></div>
+          <div><p className="text-[10px] uppercase tracking-widest text-slate-500">RAP</p><p className="text-sm font-bold text-slate-300">{listing.rap != null ? Number(listing.rap).toLocaleString() : '—'}</p></div>
           <div className="text-right"><p className="text-[10px] uppercase tracking-widest text-slate-500">From</p><p className="text-sm font-black text-emerald-400">{usd(listing.price)}</p></div>
         </div>
       </div>
@@ -493,13 +494,18 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
           </div>
           <p className="text-slate-400">{listing.item.description}</p>
           <Card className="p-5 bg-[#12101f]/60 border-white/5">
+            <div className="grid grid-cols-3 gap-2 mb-4 text-center">
+              <div className="rounded-lg bg-black/30 py-2"><p className="text-[10px] uppercase tracking-widest text-slate-500">RAP</p><p className="text-sm font-bold text-violet-300">{listing.rap != null ? Number(listing.rap).toLocaleString() : '—'}</p></div>
+              <div className="rounded-lg bg-black/30 py-2"><p className="text-[10px] uppercase tracking-widest text-slate-500">Robux</p><p className="text-sm font-bold text-slate-300">{listing.robuxPrice != null ? Number(listing.robuxPrice).toLocaleString() : '—'}</p></div>
+              <div className="rounded-lg bg-black/30 py-2"><p className="text-[10px] uppercase tracking-widest text-slate-500">Stock</p><p className="text-sm font-bold text-emerald-300">{typeof listing.stock === 'number' ? listing.stock : '—'}</p></div>
+            </div>
             <div className="flex items-end justify-between mb-4">
               <PriceTag price={listing.price} size="lg" />
-              <div className="text-right text-xs text-slate-500">Roblox Item ID<br /><span className="text-slate-300 font-mono">{listing.item.robloxItemId || 'N/A'}</span></div>
+              <div className="text-right text-xs text-slate-500">Roblox Asset ID<br /><span className="text-slate-300 font-mono">{listing.robloxAssetId || listing.item.robloxItemId || 'N/A'}</span></div>
             </div>
             {sold ? <Button disabled className="w-full" variant="secondary">Sold out</Button>
               : <Button onClick={() => requireAuth(() => setConfirmOpen(true))} className="w-full h-12 text-base bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 font-bold"><Bitcoin className="w-5 h-5 mr-2" /> Buy with Crypto</Button>}
-            <p className="text-xs text-slate-500 mt-2 text-center flex items-center justify-center gap-1"><Shield className="w-3 h-3" /> Secure checkout via CoinGate {cfg?.receiveCurrency ? `· settles in ${cfg.receiveCurrency}` : ''}</p>
+            <p className="text-xs text-slate-500 mt-2 text-center flex items-center justify-center gap-1"><Shield className="w-3 h-3" /> Secure crypto checkout {cfg?.receiveCurrency ? `· settles in ${cfg.receiveCurrency}` : ''}</p>
           </Card>
           <button onClick={() => go('seller', { username: listing.sellerName })} className="w-full flex items-center gap-3 p-4 rounded-xl bg-[#12101f]/60 border border-white/5 hover:border-violet-500/40 transition-colors text-left">
             <img src={listing.sellerAvatar} className="w-12 h-12 rounded-full bg-white/10" alt="" />
@@ -669,6 +675,7 @@ function AdminView({ api, user, go, cfg }) {
   const [reports, setReports] = useState([])
   const [itemOpen, setItemOpen] = useState(false)
   const [listOpen, setListOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [vendorOpen, setVendorOpen] = useState(false)
 
   const load = useCallback(async () => {
@@ -699,8 +706,7 @@ function AdminView({ api, user, go, cfg }) {
         <h1 className="text-3xl font-black flex items-center gap-2"><Shield className="w-7 h-7 text-fuchsia-400" /> Admin Console</h1>
         <div className="flex gap-2">
           <Button variant="outline" className="border-white/10" onClick={() => setVendorOpen(true)}><Store className="w-4 h-4 mr-1" /> New Store</Button>
-          <Button variant="outline" className="border-white/10" onClick={() => setItemOpen(true)}><Package className="w-4 h-4 mr-1" /> New Item</Button>
-          <Button className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold" onClick={() => setListOpen(true)}><Plus className="w-4 h-4 mr-1" /> New Listing</Button>
+          <Button className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold" onClick={() => setImportOpen(true)}><Plus className="w-4 h-4 mr-1" /> Import from Roblox</Button>
         </div>
       </div>
       {!cfg?.cryptoConfigured && <div className="mb-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center gap-2"><Bitcoin className="w-4 h-4" /> Crypto checkout is in DEMO mode. Add your CoinGate API token to <code className="mx-1">COINGATE_API_TOKEN</code> in the server env to accept real payments.</div>}
@@ -766,31 +772,103 @@ function AdminView({ api, user, go, cfg }) {
         </TabsContent>
       </Tabs>
 
-      <CreateItemDialog open={itemOpen} setOpen={setItemOpen} api={api} onCreated={() => { load(); toast.success('Item added to catalog') }} />
       <CreateVendorDialog open={vendorOpen} setOpen={setVendorOpen} api={api} onCreated={() => { load(); toast.success('Store created') }} />
-      <CreateListingDialog open={listOpen} setOpen={setListOpen} api={api} items={items} vendors={vendors} onCreated={() => { load(); toast.success('Listing published to marketplace') }} />
+      <ImportListingDialog open={importOpen} setOpen={setImportOpen} api={api} vendors={vendors} onCreated={() => { load(); toast.success('Item listed on the marketplace') }} />
     </div>
   )
 }
 
-function CreateItemDialog({ open, setOpen, api, onCreated }) {
-  const [form, setForm] = useState({ name: '', description: '', category: 'Limiteds', imageUrl: '', robloxItemId: '' })
+function ImportListingDialog({ open, setOpen, api, vendors, onCreated }) {
+  const [url, setUrl] = useState('')
+  const [fetching, setFetching] = useState(false)
+  const [imported, setImported] = useState(null)
+  const [manual, setManual] = useState(false)
+  const [m, setM] = useState({ name: '', imageUrl: '', rap: '', robuxPrice: '' })
+  const [form, setForm] = useState({ stock: '1', price: '', condition: 'Limited', category: 'Limiteds', vendorId: '', durationDays: '30' })
   const [loading, setLoading] = useState(false)
-  const submit = async () => { if (!form.name) { toast.error('Name required'); return } setLoading(true); try { await api('/admin/items', { method: 'POST', body: JSON.stringify(form) }); setOpen(false); setForm({ name: '', description: '', category: 'Limiteds', imageUrl: '', robloxItemId: '' }); onCreated() } catch (e) { toast.error(e.message) } finally { setLoading(false) } }
+
+  const reset = () => { setUrl(''); setImported(null); setManual(false); setM({ name: '', imageUrl: '', rap: '', robuxPrice: '' }); setForm({ stock: '1', price: '', condition: 'Limited', category: 'Limiteds', vendorId: '', durationDays: '30' }) }
+  const close = (v) => { setOpen(v); if (!v) reset() }
+
+  const doFetch = async () => {
+    if (!url) { toast.error('Paste a Roblox item link'); return }
+    setFetching(true); setImported(null)
+    try { const d = await api('/admin/roblox-lookup', { method: 'POST', body: JSON.stringify({ url }) }); setImported(d.item); setManual(false); toast.success('Item found on Roblox') }
+    catch (e) { toast.error(`${e.message}. You can enter details manually.`); setManual(true) }
+    finally { setFetching(false) }
+  }
+
+  const publish = async () => {
+    const src = imported || { name: m.name, imageUrl: m.imageUrl, rap: m.rap ? Number(m.rap) : null, lowestResalePrice: m.robuxPrice ? Number(m.robuxPrice) : null, assetId: parseInt((url.match(/\/(\d+)/) || [])[1]) || null, collectibleItemId: null, description: '' }
+    if (!src.name) { toast.error('Item name is required'); return }
+    if (!form.price) { toast.error('Enter a USD price'); return }
+    setLoading(true)
+    try {
+      await api('/admin/listings', { method: 'POST', body: JSON.stringify({
+        name: src.name, description: src.description || '', imageUrl: src.imageUrl, category: form.category,
+        robloxAssetId: src.assetId, rap: src.rap, robuxPrice: src.lowestResalePrice, collectibleItemId: src.collectibleItemId,
+        stock: form.stock, price: form.price, condition: form.condition, vendorId: form.vendorId || undefined, durationDays: form.durationDays
+      }) })
+      close(false); onCreated()
+    } catch (e) { toast.error(e.message) } finally { setLoading(false) }
+  }
+
+  const ready = imported || (manual && m.name)
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><Package className="w-5 h-5 text-violet-400" /> New Catalog Item</DialogTitle></DialogHeader>
-        <div className="space-y-3">
-          <div><Label className="text-slate-300">Name</Label><Input className="bg-black/30 border-white/10 mt-1" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Shadow Dominex Crown" /></div>
-          <div><Label className="text-slate-300">Description</Label><Textarea className="bg-black/30 border-white/10 mt-1" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Describe the item..." /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-slate-300">Category</Label><Select value={form.category} onValueChange={v => setForm({ ...form, category: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{CATEGORIES.filter(c => c !== 'All').map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select></div>
-            <div><Label className="text-slate-300">Roblox Item ID</Label><Input className="bg-black/30 border-white/10 mt-1" value={form.robloxItemId} onChange={e => setForm({ ...form, robloxItemId: e.target.value })} placeholder="optional" /></div>
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="bg-[#12101f] border-white/10 text-slate-100 max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Gem className="w-5 h-5 text-fuchsia-400" /> Import Roblox Item</DialogTitle><DialogDescription className="text-slate-400">Paste a Roblox limited/catalog link to auto-detect its RAP & Robux price, then set stock and USD price.</DialogDescription></DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label className="text-slate-300">Roblox item link</Label>
+            <div className="flex gap-2 mt-1">
+              <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://www.roblox.com/catalog/1028606/..." className="bg-black/30 border-white/10" onKeyDown={e => e.key === 'Enter' && doFetch()} />
+              <Button onClick={doFetch} disabled={fetching} className="bg-violet-500 shrink-0">{fetching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Detect'}</Button>
+            </div>
           </div>
-          <div><Label className="text-slate-300">Image URL</Label><Input className="bg-black/30 border-white/10 mt-1" value={form.imageUrl} onChange={e => setForm({ ...form, imageUrl: e.target.value })} placeholder="Leave blank for a default image" /></div>
+
+          {imported && (
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-black/30 border border-emerald-500/20">
+              {imported.imageUrl ? <img src={imported.imageUrl} className="w-16 h-16 rounded-lg object-cover bg-white/5" alt="" /> : <div className="w-16 h-16 rounded-lg bg-white/5 flex items-center justify-center"><Package className="w-6 h-6 text-slate-500" /></div>}
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm truncate">{imported.name}</p>
+                <div className="flex gap-3 text-xs mt-1">
+                  <span className="text-violet-300">RAP: <b>{imported.rap != null ? imported.rap.toLocaleString() : 'N/A'}</b></span>
+                  <span className="text-emerald-300">Lowest: <b>{imported.lowestResalePrice != null ? imported.lowestResalePrice.toLocaleString() : 'N/A'} R$</b></span>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-0.5">Asset #{imported.assetId}</p>
+              </div>
+            </div>
+          )}
+
+          {manual && !imported && (
+            <div className="space-y-2 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+              <p className="text-xs text-amber-300">Manual entry (auto-detect unavailable)</p>
+              <Input value={m.name} onChange={e => setM({ ...m, name: e.target.value })} placeholder="Item name" className="bg-black/30 border-white/10" />
+              <Input value={m.imageUrl} onChange={e => setM({ ...m, imageUrl: e.target.value })} placeholder="Image URL (optional)" className="bg-black/30 border-white/10" />
+              <div className="grid grid-cols-2 gap-2">
+                <Input value={m.rap} onChange={e => setM({ ...m, rap: e.target.value })} placeholder="RAP (Robux)" type="number" className="bg-black/30 border-white/10" />
+                <Input value={m.robuxPrice} onChange={e => setM({ ...m, robuxPrice: e.target.value })} placeholder="Robux price" type="number" className="bg-black/30 border-white/10" />
+              </div>
+            </div>
+          )}
+
+          {ready && (
+            <div className="space-y-4 pt-2 border-t border-white/5">
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label className="text-slate-300">Stock (qty)</Label><Input type="number" min="1" value={form.stock} onChange={e => setForm({ ...form, stock: e.target.value })} className="bg-black/30 border-white/10 mt-1" /></div>
+                <div><Label className="text-slate-300">Price (USD)</Label><Input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="9.99" className="bg-black/30 border-white/10 mt-1" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label className="text-slate-300">Category</Label><Select value={form.category} onValueChange={v => setForm({ ...form, category: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{CATEGORIES.filter(c => c !== 'All').map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select></div>
+                <div><Label className="text-slate-300">Condition</Label><Select value={form.condition} onValueChange={v => setForm({ ...form, condition: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{['Limited', 'Rare', 'Mint', 'New', 'Clean'].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select></div>
+              </div>
+              <div><Label className="text-slate-300">Store (optional)</Label><Select value={form.vendorId} onValueChange={v => setForm({ ...form, vendorId: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue placeholder="Robloot Market (default)" /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent></Select></div>
+              {form.price && <p className="text-xs text-violet-300">Buyers pay {usd(parseFloat(form.price) || 0)} in crypto</p>}
+            </div>
+          )}
         </div>
-        <DialogFooter><Button disabled={loading} onClick={submit} className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Add Item'}</Button></DialogFooter>
+        <DialogFooter><Button disabled={loading || !ready} onClick={publish} className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'List on Marketplace'}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -814,28 +892,3 @@ function CreateVendorDialog({ open, setOpen, api, onCreated }) {
   )
 }
 
-function CreateListingDialog({ open, setOpen, api, items, vendors, onCreated }) {
-  const [form, setForm] = useState({ itemId: '', vendorId: '', price: '', condition: 'New', durationDays: '30' })
-  const [loading, setLoading] = useState(false)
-  const selected = items.find(i => i.id === form.itemId)
-  const submit = async () => { if (!form.itemId || !form.vendorId || !form.price) { toast.error('Item, store and price are required'); return } setLoading(true); try { await api('/admin/listings', { method: 'POST', body: JSON.stringify(form) }); setOpen(false); setForm({ itemId: '', vendorId: '', price: '', condition: 'New', durationDays: '30' }); onCreated() } catch (e) { toast.error(e.message) } finally { setLoading(false) } }
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="bg-[#12101f] border-white/10 text-slate-100 max-w-lg">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><Tag className="w-5 h-5 text-fuchsia-400" /> New Listing</DialogTitle><DialogDescription className="text-slate-400">List a catalog item for sale under a store.</DialogDescription></DialogHeader>
-        <div className="space-y-4">
-          <div><Label className="text-slate-300">Item</Label><Select value={form.itemId} onValueChange={v => setForm({ ...form, itemId: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue placeholder="Select an item" /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100 max-h-64">{items.map(i => <SelectItem key={i.id} value={i.id}>{i.name} · {i.category}</SelectItem>)}</SelectContent></Select></div>
-          {selected && <div className="flex items-center gap-3 p-3 rounded-lg bg-black/30 border border-white/5"><img src={selected.imageUrl} className="w-14 h-14 rounded-lg object-cover" alt="" /><div><p className="font-bold text-sm">{selected.name}</p><p className="text-xs text-slate-400">{selected.category}</p></div></div>}
-          <div><Label className="text-slate-300">Store</Label><Select value={form.vendorId} onValueChange={v => setForm({ ...form, vendorId: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue placeholder="Select a store" /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent></Select></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-slate-300">Price (USD)</Label><Input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="9.99" className="bg-black/30 border-white/10 mt-1" /></div>
-            <div><Label className="text-slate-300">Condition</Label><Select value={form.condition} onValueChange={v => setForm({ ...form, condition: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{['New', 'Mint', 'Rare', 'Used'].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select></div>
-          </div>
-          {form.price && <p className="text-xs text-violet-300">= {rbx(parseFloat(form.price) || 0)} R$</p>}
-          <div><Label className="text-slate-300">Duration</Label><Select value={form.durationDays} onValueChange={v => setForm({ ...form, durationDays: v })}><SelectTrigger className="bg-black/30 border-white/10 mt-1"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{['7', '14', '30', '90'].map(d => <SelectItem key={d} value={d}>{d} days</SelectItem>)}</SelectContent></Select></div>
-        </div>
-        <DialogFooter><Button disabled={loading} onClick={submit} className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">{loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Publish Listing'}</Button></DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}

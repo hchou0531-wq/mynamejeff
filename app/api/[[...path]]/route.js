@@ -3,15 +3,13 @@ import { v4 as uuidv4 } from 'uuid'
 import { NextResponse } from 'next/server'
 
 // ---------------- MongoDB ----------------
-let client
-let db
+let clientPromise
 async function connectToMongo() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGO_URL)
-    await client.connect()
-    db = client.db(process.env.DB_NAME)
+  if (!clientPromise) {
+    clientPromise = new MongoClient(process.env.MONGO_URL).connect()
   }
-  return db
+  const c = await clientPromise
+  return c.db(process.env.DB_NAME)
 }
 
 const ROBUX_RATE = 80 // R$ per USD (display only)
@@ -36,6 +34,18 @@ async function getUser(request, db) {
 }
 async function notify(db, userId, text, type = 'info') {
   await db.collection('notifications').insertOne({ id: uuidv4(), userId, text, type, read: false, createdAt: new Date() })
+}
+async function fulfillListing(db, listingId) {
+  const l = await db.collection('listings').findOne({ id: listingId })
+  if (!l) return
+  if (typeof l.stock === 'number') {
+    const newStock = Math.max(0, l.stock - 1)
+    const upd = { stock: newStock, soldCount: (l.soldCount || 0) + 1 }
+    if (newStock <= 0) { upd.status = 'sold'; upd.soldAt = new Date() }
+    await db.collection('listings').updateOne({ id: listingId }, { $set: upd })
+  } else {
+    await db.collection('listings').updateOne({ id: listingId }, { $set: { status: 'sold', soldAt: new Date() } })
+  }
 }
 
 // ---------------- CoinGate ----------------
@@ -74,6 +84,77 @@ async function coingateGetOrder(coingateId) {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.message || `CoinGate HTTP ${res.status}`)
   return data
+}
+
+// ---------------- Roblox lookup ----------------
+function parseRobloxAssetId(value) {
+  if (!value) return null
+  const s = String(value).trim()
+  if (/^\d+$/.test(s)) { const n = Number(s); return n > 0 ? n : null }
+  try {
+    const url = new URL(s)
+    if (!/roblox\.com$/.test(url.hostname.replace('www.', ''))) return null
+    const m = url.pathname.match(/\/(?:catalog|library|item)\/(\d+)/)
+    if (m) return Number(m[1])
+    const id = url.searchParams.get('id') || url.searchParams.get('Id')
+    if (id && /^\d+$/.test(id)) return Number(id)
+    return null
+  } catch { return null }
+}
+function robloxHeaders(json = false) {
+  const h = { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }
+  if (json) h['Content-Type'] = 'application/json'
+  if (process.env.ROBLOX_ACCESS_TOKEN) h.Authorization = `Bearer ${process.env.ROBLOX_ACCESS_TOKEN}`
+  return h
+}
+async function robloxGetJson(url, options = {}, attempts = 2) {
+  let lastErr
+  let csrf = options._csrf
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const headers = { ...robloxHeaders(options.method === 'POST'), ...(options.headers || {}) }
+      if (csrf) headers['x-csrf-token'] = csrf
+      const res = await fetch(url, { ...options, headers, cache: 'no-store' })
+      if (res.ok) return await res.json()
+      // Roblox CSRF handshake: 403 returns an x-csrf-token to retry with
+      const token = res.headers.get('x-csrf-token')
+      if (res.status === 403 && token && token !== csrf) { csrf = token; continue }
+      if (res.status === 429 || res.status >= 500) { await new Promise(r => setTimeout(r, 400 * (i + 1))); lastErr = new Error(`Roblox ${res.status}`); continue }
+      throw new Error(`Roblox returned ${res.status}`)
+    } catch (e) { lastErr = e }
+  }
+  throw lastErr || new Error('Roblox request failed')
+}
+async function robloxLookup(input) {
+  const assetId = parseRobloxAssetId(input)
+  if (!assetId) throw new Error('Could not read an asset ID. Paste a link like https://www.roblox.com/catalog/1028606/Name')
+  const catalog = await robloxGetJson('https://catalog.roblox.com/v1/catalog/items/details', {
+    method: 'POST', body: JSON.stringify({ items: [{ itemType: 'Asset', id: assetId }] })
+  })
+  const item = (catalog && catalog.data && catalog.data[0]) || null
+  if (!item) throw new Error('Item not found on Roblox')
+  let imageUrl = null
+  try {
+    const thumb = await robloxGetJson(`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`)
+    imageUrl = thumb && thumb.data && thumb.data[0] && thumb.data[0].imageUrl
+  } catch (e) {}
+  let rap = null
+  const collectibleItemId = item.collectibleItemId || null
+  if (collectibleItemId) {
+    try { const m = await robloxGetJson(`https://apis.roblox.com/marketplace-sales/v1/item/${encodeURIComponent(collectibleItemId)}/resale-data`); rap = m.recentAveragePrice ?? null } catch (e) {}
+  }
+  if (rap == null) {
+    try { const l = await robloxGetJson(`https://economy.roblox.com/v1/assets/${assetId}/resale-data`); rap = l.recentAveragePrice ?? null } catch (e) {}
+  }
+  return {
+    assetId,
+    name: item.name || `Roblox Item ${assetId}`,
+    description: item.description || '',
+    imageUrl,
+    lowestResalePrice: item.lowestResalePrice ?? item.lowestPrice ?? item.price ?? null,
+    rap,
+    collectibleItemId
+  }
 }
 
 // ---------------- Seed ----------------
@@ -116,26 +197,8 @@ const CONDITIONS = ['Mint', 'Rare', 'New', 'Used']
 function pick(arr, i) { return arr[i % arr.length] }
 
 async function ensureSoldSamples(db) {
-  const c = await db.collection('listings').countDocuments({ status: 'sold' })
-  if (c > 0) return
-  const items = await db.collection('items').find({}).limit(20).toArray()
-  const vendors = await db.collection('vendors').find({}).toArray()
-  if (!items.length || !vendors.length) return
-  const prices = [131.42, 15.9, 32.49, 23.32, 31.8, 89.99, 12.5, 210]
-  const samples = []
-  for (let i = 0; i < 8 && i < items.length; i++) {
-    const it = items[(i * 2) % items.length]
-    const v = pick(vendors, i)
-    samples.push({
-      id: uuidv4(), itemId: it.id,
-      item: { name: it.name, description: it.description, imageUrl: it.imageUrl, category: it.category, robloxItemId: it.robloxItemId },
-      vendorId: v.id, sellerName: v.name, sellerAvatar: v.avatarUrl, sellerRep: v.reputation,
-      price: prices[i], currency: 'USD', status: 'sold', condition: pick(CONDITIONS, i),
-      popularity: Math.floor(Math.random() * 900) + 200, soldAt: new Date(Date.now() - i * 5400000),
-      expiresAt: new Date(Date.now() - 86400000), createdAt: new Date(Date.now() - (i + 20) * 3600000)
-    })
-  }
-  if (samples.length) await db.collection('listings').insertMany(samples)
+  // No-op: marketplace uses only real imported items and real sold orders.
+  return
 }
 
 async function doSeed(db, force = false) {
@@ -149,46 +212,22 @@ async function doSeed(db, force = false) {
       isAdmin: true, demo: true, createdAt: new Date()
     })
   }
-
-  const count = await db.collection('items').countDocuments()
-  if (count > 0 && !force) return { seeded: false, message: 'Already seeded' }
+  // ensure at least one house store exists (needed to attribute listings)
+  const vendorCount = await db.collection('vendors').countDocuments()
+  if (vendorCount === 0) {
+    const vendors = [['Robloot Market', 5, 0], ...SEED_VENDORS].map(([name, reputation, sales]) => ({
+      id: uuidv4(), name, avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(name)}`,
+      reputation, salesCount: sales, createdAt: new Date()
+    }))
+    await db.collection('vendors').insertMany(vendors)
+  }
+  // NOTE: marketplace starts EMPTY. Admin imports real items from Roblox catalog URLs.
   if (force) {
     await db.collection('items').deleteMany({})
     await db.collection('listings').deleteMany({})
-    await db.collection('vendors').deleteMany({})
+    return { seeded: true, cleared: true }
   }
-
-  const vendors = SEED_VENDORS.map(([name, reputation, sales]) => ({
-    id: uuidv4(), name, avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(name)}`,
-    reputation, salesCount: sales, createdAt: new Date()
-  }))
-  await db.collection('vendors').insertMany(vendors)
-
-  const items = SEED_ITEMS.map(([name, description, category], i) => ({
-    id: uuidv4(), name, description, category, imageUrl: pick(ITEM_IMAGES, i), robloxItemId: 1000000 + i, createdAt: new Date()
-  }))
-  await db.collection('items').insertMany(items)
-
-  const listings = []
-  const basePrices = [149.99, 89.5, 42, 27.75, 15.25, 64, 33.4, 12.99, 8.5, 120, 199.99, 55, 19.99, 24, 78, 21.5, 45, 6.99, 250, 38]
-  items.forEach((it, i) => {
-    const n = 1 + (i % 2)
-    for (let k = 0; k < n; k++) {
-      const v = pick(vendors, i + k)
-      const price = Math.round((basePrices[i] * (1 + (k * 0.12))) * 100) / 100
-      listings.push({
-        id: uuidv4(), itemId: it.id,
-        item: { name: it.name, description: it.description, imageUrl: it.imageUrl, category: it.category, robloxItemId: it.robloxItemId },
-        vendorId: v.id, sellerName: v.name, sellerAvatar: v.avatarUrl, sellerRep: v.reputation,
-        price, currency: 'USD', status: 'active', condition: pick(CONDITIONS, i + k),
-        popularity: Math.floor(Math.random() * 900) + 50,
-        expiresAt: new Date(Date.now() + (7 + (i % 21)) * 86400000),
-        createdAt: new Date(Date.now() - (i * 3 + k) * 3600000)
-      })
-    }
-  })
-  await db.collection('listings').insertMany(listings)
-  return { seeded: true, items: items.length, vendors: vendors.length, listings: listings.length }
+  return { seeded: false }
 }
 
 // ---------------- Router ----------------
@@ -356,7 +395,7 @@ async function handleRoute(request, { params }) {
       const dead = ['invalid', 'expired', 'canceled', 'refunded'].includes(s)
       if (paid && order.status !== 'paid') {
         await db.collection('orders').updateOne({ orderId, status: { $ne: 'paid' } }, { $set: { status: 'paid', paidAt: new Date() } })
-        await db.collection('listings').updateOne({ id: order.listingId }, { $set: { status: 'sold' } })
+        await fulfillListing(db, order.listingId)
         await notify(db, order.buyerId, `Payment confirmed! You now own ${order.item.name}.`, 'success')
       } else if (dead && order.status !== 'paid') {
         await db.collection('orders').updateOne({ orderId }, { $set: { status: s } })
@@ -373,7 +412,7 @@ async function handleRoute(request, { params }) {
       const order = await db.collection('orders').findOne({ orderId: b.orderId, buyerId: user.id })
       if (!order) return json({ error: 'Order not found' }, 404)
       await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { status: 'paid', paidAt: new Date() } })
-      await db.collection('listings').updateOne({ id: order.listingId }, { $set: { status: 'sold' } })
+      await fulfillListing(db, order.listingId)
       await notify(db, user.id, `Payment confirmed! You now own ${order.item.name}.`, 'success')
       return json({ ok: true, status: 'paid' })
     }
@@ -425,6 +464,16 @@ async function handleRoute(request, { params }) {
       const user = await getUser(request, db)
       if (!user || !user.isAdmin) return json({ error: 'Admin only' }, 403)
 
+      if (route === '/admin/roblox-lookup' && method === 'POST') {
+        const b = await request.json()
+        try {
+          const data = await robloxLookup(b.url)
+          return json({ item: data })
+        } catch (e) {
+          return json({ error: e.message || 'Roblox lookup failed', roblox: true }, 502)
+        }
+      }
+
       if (route === '/admin/stats' && method === 'GET') {
         const [users, listings, orders, reports, items] = await Promise.all([
           db.collection('users').countDocuments(), db.collection('listings').countDocuments(),
@@ -460,19 +509,42 @@ async function handleRoute(request, { params }) {
       if (route === '/admin/listings' && method === 'GET') return json({ listings: (await db.collection('listings').find({}).sort({ createdAt: -1 }).toArray()).map(clean) })
       if (route === '/admin/listings' && method === 'POST') {
         const b = await request.json()
-        const item = await db.collection('items').findOne({ id: b.itemId })
-        if (!item) return json({ error: 'Select a valid item' }, 400)
-        const vendor = await db.collection('vendors').findOne({ id: b.vendorId })
-        if (!vendor) return json({ error: 'Select a valid vendor' }, 400)
         const price = parseFloat(b.price)
-        if (!price || price <= 0) return json({ error: 'Invalid price' }, 400)
+        if (!price || price <= 0) return json({ error: 'Enter a valid USD price' }, 400)
+        const stock = Math.max(1, parseInt(b.stock) || 1)
+
+        // Resolve or create the underlying catalog item
+        let item
+        if (b.itemId) {
+          item = await db.collection('items').findOne({ id: b.itemId })
+          if (!item) return json({ error: 'Select a valid item' }, 400)
+        } else {
+          if (!b.name) return json({ error: 'Item name required (import from Roblox first)' }, 400)
+          item = {
+            id: uuidv4(), name: b.name, description: b.description || '', category: b.category || 'Limiteds',
+            imageUrl: b.imageUrl || pick(ITEM_IMAGES, Math.floor(Math.random() * ITEM_IMAGES.length)),
+            robloxItemId: b.robloxAssetId || b.assetId || null,
+            rap: b.rap ?? null, robuxPrice: b.robuxPrice ?? b.lowestResalePrice ?? null,
+            collectibleItemId: b.collectibleItemId || null, createdAt: new Date()
+          }
+          await db.collection('items').insertOne(item)
+        }
+
+        // Resolve vendor: use provided, else default house store
+        let vendor = b.vendorId ? await db.collection('vendors').findOne({ id: b.vendorId }) : null
+        if (!vendor) vendor = await db.collection('vendors').findOne({ name: 'Robloot Market' }) || await db.collection('vendors').findOne({})
+        if (!vendor) return json({ error: 'No store available' }, 400)
+
         const days = parseInt(b.durationDays) || 30
         const listing = {
           id: uuidv4(), itemId: item.id,
           item: { name: item.name, description: item.description, imageUrl: item.imageUrl, category: item.category, robloxItemId: item.robloxItemId },
           vendorId: vendor.id, sellerName: vendor.name, sellerAvatar: vendor.avatarUrl, sellerRep: vendor.reputation,
-          price, currency: 'USD', status: 'active', condition: b.condition || 'New', popularity: 0,
-          expiresAt: new Date(Date.now() + days * 86400000), createdAt: new Date()
+          price, currency: 'USD', status: 'active', condition: b.condition || 'Limited',
+          stock, soldCount: 0,
+          rap: b.rap ?? item.rap ?? null, robuxPrice: b.robuxPrice ?? b.lowestResalePrice ?? item.robuxPrice ?? null,
+          robloxAssetId: item.robloxItemId || null,
+          popularity: 0, expiresAt: new Date(Date.now() + days * 86400000), createdAt: new Date()
         }
         await db.collection('listings').insertOne(listing)
         return json({ listing: clean(listing) })
