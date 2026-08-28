@@ -208,8 +208,16 @@ async function robloxProfile(input) {
   }
 }
 async function robloxLimiteds(userId) {
-  const r = await robloxGetJson(`https://inventory.roblox.com/v1/users/${userId}/assets/collectibles?limit=100&sortOrder=Desc`)
-  const data = r.data || []
+  let data = []
+  let cursor = ''
+  // Paginate through ALL collectibles (Roblox caps at 100/page). Accounts can hold hundreds.
+  for (let page = 0; page < 30; page++) {
+    const url = `https://inventory.roblox.com/v1/users/${userId}/assets/collectibles?limit=100&sortOrder=Desc${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+    const r = await robloxGetJson(url)
+    data = data.concat(r.data || [])
+    cursor = r.nextPageCursor
+    if (!cursor) break
+  }
   const thumbs = await robloxAssetThumbs(data.map(d => d.assetId))
   return data.map(d => ({ assetId: d.assetId, name: d.name, rap: d.recentAveragePrice, originalPrice: d.originalPrice, serialNumber: d.serialNumber, stock: d.assetStock, imageUrl: thumbs[d.assetId] || null }))
 }
