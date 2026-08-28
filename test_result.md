@@ -360,6 +360,8 @@ backend_v3:
 test_plan:
   current_focus: []
   stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
   run_ui: false
 
 agent_communication:
@@ -428,3 +430,48 @@ agent_communication:
     -message: "Test UPDATE 4 backend. (1) Fresh state: GET /api/items and GET /api/listings are EMPTY arrays; GET /api/sold empty. (2) Admin login admin@robloot.com/roblootdevtomo. (3) POST /api/admin/roblox-lookup {url:'https://www.roblox.com/catalog/1028606/x'} as admin -> returns item {assetId,name,imageUrl,lowestResalePrice,rap,collectibleItemId}. Non-admin token -> 403. (4) POST /api/admin/listings as admin with body {name:'Test Limited', imageUrl:'https://x/y.png', category:'Limiteds', robloxAssetId:123, rap:1000, robuxPrice:1350, stock:2, price:19.99, condition:'Limited'} -> creates listing with stock=2; appears in GET /api/listings. (5) STOCK: signup a normal user, POST /api/orders {listingId} (demo mode returns simulated:true) -> POST /api/payments/simulate {orderId} -> listing stock should drop to 1 and status still 'active' (GET /api/listings/:id). Buy again -> stock 0 and status 'sold'. A third buy -> 400 'no longer available'. (6) Confirm non-admin cannot POST /api/admin/listings (403). Note: live crypto still demo (no CoinGate token)."
     -agent: "testing"
     -message: "✅ UPDATE 4 BACKEND TESTING COMPLETE - ALL TESTS PASSED (21/21). Comprehensive testing completed for empty marketplace + Roblox importer + stock management: (1) EMPTY STATE: Marketplace starts empty, GET /api/items, /api/listings, /api/sold all return empty arrays ✓ (2) ADMIN LOGIN: admin@robloot.com login working, isAdmin=true ✓ (3) ROBLOX LOOKUP: Valid URL returns correct item data (assetId=1028606, name, imageUrl, rap, lowestResalePrice), non-admin returns 403, invalid URL returns 502 error ✓ (4) ADMIN CREATE-LISTING WITH STOCK: Successfully creates listing with imported fields (stock=2, rap=1000, robuxPrice=1350, status=active), appears in public listings, non-admin returns 403 ✓ (5) STOCK DECREMENT FLOW: First purchase decrements stock 2->1 (status=active, soldCount=1), second purchase decrements stock 1->0 (status=sold, soldCount=2), third purchase correctly blocked with 400 'no longer available' ✓ (6) REGRESSION: GET /api/config returns cryptoConfigured=false, filters (sort=price_asc) working ✓. No critical issues found. Backend UPDATE 4 is production-ready."
+
+## ===== UPDATE 5: editable import, real image persisted, edit stock =====
+backend_v5:
+  - task: "Create-listing persists provided imageUrl exactly (real Roblox image)"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "When admin passes imageUrl, the created item + listing must store that exact URL (no default substitution). Roblox thumbnail fetch now retries on Pending state."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Image persistence working correctly. POST /api/admin/listings with imageUrl='https://tr.rbxcdn.com/EXAMPLEHASH/420/420/Hat/Png/noFilter' creates listing. GET /api/listings/:id returns item.imageUrl EXACTLY matching the provided URL (not replaced with unsplash default). GET /api/listings also returns the exact imageUrl. All 3 image persistence tests passed."
+  - task: "PUT /api/admin/listings/:id (edit/add stock, price)"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Admin-only. Updates stock (0 -> status sold, >0 -> status active/relist) and/or price and/or condition. Returns updated listing."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Edit stock endpoint working correctly. PUT /api/admin/listings/:id with stock=5 -> stock=5, status=active. PUT stock=0 -> stock=0, status=sold. PUT stock=3 -> stock=3, status=active (relist working). PUT price=99.99 -> price=99.99. PUT with normal user token correctly returns 403. PUT with empty body correctly returns 400. All 7 edit stock tests passed."
+  - task: "Roblox lookup regression"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "medium"
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Roblox lookup still working correctly. POST /api/admin/roblox-lookup with URL 'https://www.roblox.com/catalog/1028606/x' returns item with assetId=1028606, name='Red Baseball Cap', imageUrl='https://tr.rbxcdn.com/180DAY-7fddb094b8752cd87b62ffba2abae797/420/420/Hat/Png/noFilter' (tr.rbxcdn.com URL), rap=1302, lowestResalePrice=1300. Regression test passed."
+
+agent_communication:
+    -agent: "main"
+    -message: "Test UPDATE 5. Admin login admin@robloot.com/roblootdevtomo. (1) IMAGE PERSIST: POST /api/admin/listings {name:'ImgTest', imageUrl:'https://tr.rbxcdn.com/EXAMPLE/420/420/Hat/Png/noFilter', category:'Limiteds', stock:1, price:5} -> GET /api/listings and GET /api/listings/:id must return item.imageUrl EXACTLY equal to that URL (not an unsplash default). (2) EDIT STOCK endpoint: create a listing with stock:1; PUT /api/admin/listings/:id {stock:5} -> listing.stock=5, status 'active'. PUT {stock:0} -> status 'sold'. PUT {price:99.99} -> price updated. PUT with a NORMAL user token -> 403. PUT with empty body -> 400. (3) Regression: roblox-lookup for 1028606 still returns imageUrl (a tr.rbxcdn.com URL) and rap. Do NOT modify code."
+    -agent: "testing"
+    -message: "✅ UPDATE 5 BACKEND TESTING COMPLETE - ALL TESTS PASSED (11/11). Comprehensive testing completed for image persistence + edit stock endpoint: (1) IMAGE PERSISTENCE: POST /api/admin/listings with imageUrl stores exact URL (not replaced with default), verified via GET /api/listings/:id and GET /api/listings - all return exact imageUrl 'https://tr.rbxcdn.com/EXAMPLEHASH/420/420/Hat/Png/noFilter' ✓ (2) EDIT STOCK ENDPOINT: PUT /api/admin/listings/:id working correctly - stock=5 sets status=active, stock=0 sets status=sold, stock=3 relists (status=active), price=99.99 updates price, normal user returns 403, empty body returns 400 ✓ (3) REGRESSION: Roblox lookup returns valid item with tr.rbxcdn.com imageUrl, rap=1302, lowestResalePrice=1300 ✓. No critical issues found. Backend UPDATE 5 is production-ready."

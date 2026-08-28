@@ -134,10 +134,15 @@ async function robloxLookup(input) {
   const item = (catalog && catalog.data && catalog.data[0]) || null
   if (!item) throw new Error('Item not found on Roblox')
   let imageUrl = null
-  try {
-    const thumb = await robloxGetJson(`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`)
-    imageUrl = thumb && thumb.data && thumb.data[0] && thumb.data[0].imageUrl
-  } catch (e) {}
+  for (let t = 0; t < 3 && !imageUrl; t++) {
+    try {
+      const thumb = await robloxGetJson(`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`)
+      const d = thumb && thumb.data && thumb.data[0]
+      if (d && d.state === 'Completed' && d.imageUrl) { imageUrl = d.imageUrl; break }
+      if (d && d.imageUrl) imageUrl = d.imageUrl
+    } catch (e) {}
+    if (!imageUrl) await new Promise(r => setTimeout(r, 500))
+  }
   let rap = null
   const collectibleItemId = item.collectibleItemId || null
   if (collectibleItemId) {
@@ -548,6 +553,17 @@ async function handleRoute(request, { params }) {
         }
         await db.collection('listings').insertOne(listing)
         return json({ listing: clean(listing) })
+      }
+      if (route.startsWith('/admin/listings/') && method === 'PUT') {
+        const b = await request.json()
+        const upd = {}
+        if (b.stock != null && b.stock !== '') { const s = Math.max(0, parseInt(b.stock)); upd.stock = s; upd.status = s > 0 ? 'active' : 'sold' }
+        if (b.price != null && b.price !== '') { const p = parseFloat(b.price); if (p > 0) upd.price = p }
+        if (b.condition) upd.condition = b.condition
+        if (Object.keys(upd).length === 0) return json({ error: 'Nothing to update' }, 400)
+        await db.collection('listings').updateOne({ id: path[2] }, { $set: upd })
+        const l = await db.collection('listings').findOne({ id: path[2] })
+        return json({ listing: clean(l) })
       }
       if (route.startsWith('/admin/listings/') && method === 'DELETE') { await db.collection('listings').updateOne({ id: path[2] }, { $set: { status: 'removed' } }); return json({ success: true }) }
 
