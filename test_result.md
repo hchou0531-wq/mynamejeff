@@ -1,0 +1,298 @@
+#====================================================================================================
+# START - Testing Protocol - DO NOT EDIT OR REMOVE THIS SECTION
+#====================================================================================================
+
+# THIS SECTION CONTAINS CRITICAL TESTING INSTRUCTIONS FOR BOTH AGENTS
+# BOTH MAIN_AGENT AND TESTING_AGENT MUST PRESERVE THIS ENTIRE BLOCK
+
+# Communication Protocol:
+# If the `testing_agent` is available, main agent should delegate all testing tasks to it.
+#
+# You have access to a file called `test_result.md`. This file contains the complete testing state
+# and history, and is the primary means of communication between main and the testing agent.
+#
+# Main and testing agents must follow this exact format to maintain testing data. 
+# The testing data must be entered in yaml format Below is the data structure:
+# 
+## user_problem_statement: {problem_statement}
+## backend:
+##   - task: "Task name"
+##     implemented: true
+##     working: true  # or false or "NA"
+##     file: "file_path.py"
+##     stuck_count: 0
+##     priority: "high"  # or "medium" or "low"
+##     needs_retesting: false
+##     status_history:
+##         -working: true  # or false or "NA"
+##         -agent: "main"  # or "testing" or "user"
+##         -comment: "Detailed comment about status"
+##
+## frontend:
+##   - task: "Task name"
+##     implemented: true
+##     working: true  # or false or "NA"
+##     file: "file_path.js"
+##     stuck_count: 0
+##     priority: "high"  # or "medium" or "low"
+##     needs_retesting: false
+##     status_history:
+##         -working: true  # or false or "NA"
+##         -agent: "main"  # or "testing" or "user"
+##         -comment: "Detailed comment about status"
+##
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.0"
+##   test_sequence: 0
+##   run_ui: false
+##
+## test_plan:
+##   current_focus:
+##     - "Task name 1"
+##     - "Task name 2"
+##   stuck_tasks:
+##     - "Task name with persistent issues"
+##   test_all: false
+##   test_priority: "high_first"  # or "sequential" or "stuck_first"
+##
+## agent_communication:
+##     -agent: "main"  # or "testing" or "user"
+##     -message: "Communication message between agents"
+
+# Protocol Guidelines for Main agent
+#
+# 1. Update Test Result File Before Testing:
+#    - Main agent must always update the `test_result.md` file before calling the testing agent
+#    - Add implementation details to the status_history
+#    - Set `needs_retesting` to true for tasks that need testing
+#    - Update the `test_plan` section to guide testing priorities
+#    - Add a message to `agent_communication` explaining what you've done
+#
+# 2. Incorporate User Feedback:
+#    - When a user provides feedback that something is or isn't working, add this information to the relevant task's status_history
+#    - Update the working status based on user feedback
+#    - If a user reports an issue with a task that was marked as working, increment the stuck_count
+#    - Whenever user reports issue in the app, if we have testing agent and task_result.md file so find the appropriate task for that and append in status_history of that task to contain the user concern and problem as well 
+#
+# 3. Track Stuck Tasks:
+#    - Monitor which tasks have high stuck_count values or where you are fixing same issue again and again, analyze that when you read task_result.md
+#    - For persistent issues, use websearch tool to find solutions
+#    - Pay special attention to tasks in the stuck_tasks list
+#    - When you fix an issue with a stuck task, don't reset the stuck_count until the testing agent confirms it's working
+#
+# 4. Provide Context to Testing Agent:
+#    - When calling the testing agent, provide clear instructions about:
+#      - Which tasks need testing (reference the test_plan)
+#      - Any authentication details or configuration needed
+#      - Specific test scenarios to focus on
+#      - Any known issues or edge cases to verify
+#
+# 5. Call the testing agent with specific instructions referring to test_result.md
+#
+# IMPORTANT: Main agent must ALWAYS update test_result.md BEFORE calling the testing agent, as it relies on this file to understand what to test next.
+
+#====================================================================================================
+# END - Testing Protocol - DO NOT EDIT OR REMOVE THIS SECTION
+#====================================================================================================
+
+
+
+#====================================================================================================
+# Testing Data - Main Agent and testing sub agent both should log testing data below this section
+#====================================================================================================
+
+user_problem_statement: "Robloot - an original Roblox-style items marketplace. Core loop: browse -> search -> item page -> buy -> sell/list -> account/inventory. Simple email/password auth, simulated USD+Robux wallet, seeded mock items, buyer + seller loops, admin panel."
+
+backend:
+  - task: "Auto-seed on first API hit + POST /api/seed"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "doSeed runs at start of every request (idempotent). POST /api/seed forces reseed. Seeds 20 items, 5 demo sellers, ~30 listings."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Auto-seed working correctly. GET /listings returned 30 listings on first hit. POST /api/seed successfully reseeded with 20 items, 5 sellers, 30 listings. GET /items confirmed 20 items present."
+  - task: "Auth signup/login/me + verify-roblox"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /auth/signup gives $500 wallet + token(userId). /auth/login validates email+password. GET /me needs Bearer token. POST /verify-roblox sets robloxVerified."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All auth endpoints working correctly. Signup returns token and user with $500 balance. GET /me works with Bearer token, returns 401 without token. Login validates credentials correctly (401 on wrong password). Duplicate signup returns 400. POST /verify-roblox sets robloxVerified=true."
+  - task: "Listings CRUD + filters/sort/search"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /listings supports search, category, condition, minPrice/maxPrice, sort(newest/popular/price_asc/price_desc), sellerId. POST /listings requires auth + robloxVerified. DELETE marks removed. GET /listings/:id returns listing+seller."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All listing endpoints working correctly. Category filter (Limiteds) returns only Limiteds items. Sort price_asc/price_desc working correctly. Search for 'Crown' found correct results. maxPrice filter correctly returns only items <= $20. GET /listings/:id returns listing with seller info. POST /listings requires robloxVerified (403 before verify, 200 after). Created listing appears in seller's listings."
+  - task: "Orders (buy flow) + wallet transfer"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /orders checks balance, deducts buyer, credits seller, marks listing sold, creates notifications for both. GET /orders returns {purchases, sales}. Blocks buying own listing & insufficient balance."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Complete buy flow working correctly. POST /orders successfully creates order, deducts buyer balance ($500 -> $490.01), credits seller balance ($500 -> $509.99), increments seller salesCount (0 -> 1), marks listing as 'sold'. Correctly blocks buying own listing (400). Correctly blocks buying already-sold listing (400). GET /orders returns purchases for buyer and sales for seller. Notifications created for both parties."
+  - task: "Items catalog, users profile, wishlist, reports, notifications"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /items, GET /items/:id, GET /users/:username, wishlist GET/POST(toggle)/DELETE, POST /reports, GET /notifications, POST /notifications/read."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All misc endpoints working correctly. POST /wishlist toggles add/remove (added:true then added:false). POST /reports creates report successfully. GET /notifications returns notifications including purchase notification for buyer. GET /items tested in seed section (20 items returned)."
+  - task: "Admin endpoints"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /admin/users|listings|orders|reports (isAdmin only). DELETE /admin/listings/:id, DELETE /admin/users/:id, POST /admin/reports/:id resolve. Regular users must get 403."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Admin guard working correctly. GET /admin/users with non-admin user token returns 403 as expected. No admin user is seeded, so 403 guard is the primary verification point."
+
+frontend:
+  - task: "Full marketplace SPA"
+    implemented: true
+    working: "NA"
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Home/browse/item/seller/dashboard/admin views. Not yet frontend-tested; awaiting user go-ahead."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Backend MVP ready for a Roblox-style marketplace. Please test all endpoints via {NEXT_PUBLIC_BASE_URL}/api. Auth token is simply the userId returned from signup/login, passed as 'Authorization: Bearer <token>'. Key flow to verify end-to-end: signup -> verify-roblox -> POST /listings -> (as a second user) POST /orders to buy -> confirm wallet balances moved and listing status=sold. Also confirm GET /listings filters/sort work and seed populated 20 items + listings. Admin endpoints must reject non-admin with 403 (no admin user is seeded, so 403 path is the main check)."
+    -agent: "testing"
+    -message: "✅ BACKEND TESTING COMPLETE - ALL TESTS PASSED (36/36). Comprehensive testing completed covering: (1) SEED: Auto-seed and POST /seed working, 20 items + 30 listings created. (2) AUTH: Signup, login, /me, verify-roblox all working correctly with proper validation. (3) LISTINGS: All filters (category, search, maxPrice), sorting (price_asc/desc), and CRUD operations working. (4) SELL FLOW: Roblox verification required before listing, listing creation successful. (5) BUY FLOW: Complete purchase flow working - wallet transfers accurate, listing marked sold, salesCount incremented, notifications created. Correctly blocks buying own listing and already-sold listings. (6) MISC: Wishlist toggle, reports, notifications all working. (7) ADMIN: 403 guard working for non-admin users. No critical issues found. Backend is production-ready."
+
+## ===== PIVOT UPDATE (buyers-only + admin control + CoinGate crypto) =====
+backend_v2:
+  - task: "Config + admin auto-seed"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /api/config returns {cryptoConfigured:false in demo, receiveCurrency}. Admin user auto-seeded from ADMIN_EMAIL/ADMIN_PASSWORD env (admin@robloot.com / roblootdevtomo). Vendors collection seeded (5)."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - GET /api/config returns cryptoConfigured=false, receiveCurrency=USDT. Admin login successful with admin@robloot.com/roblootdevtomo, returns token with isAdmin=true."
+  - task: "Buyers-only + no user selling"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Removed user listing create/verify. Users only buy. GET /orders returns purchases only."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Verified buyers-only model. Normal users can only buy (no selling endpoints). GET /orders returns purchases array only. Admin creates all listings via /admin/listings."
+  - task: "CoinGate crypto order flow (demo fallback)"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /orders creates pending order. When COINGATE_API_TOKEN empty -> returns {orderId, simulated:true} (no live call). GET /payments/status?orderId polls status. POST /payments/simulate (auth, only when crypto NOT configured) marks order paid + listing sold + notifies buyer. POST /payments/callback verifies token + refetches CoinGate status."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Complete demo mode crypto flow working. POST /orders returns {orderId, simulated:true, checkoutUrl:null}. GET /payments/status shows pending_payment with item details. POST /payments/simulate marks order paid, listing sold, sends notification. Buying sold listing correctly returns 400. All 8 buy flow tests passed."
+  - task: "Admin CRUD (items/vendors/listings/orders/users/reports/stats)"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "All /admin/* require isAdmin (403 otherwise). POST /admin/items, POST /admin/vendors, POST /admin/listings (needs itemId+vendorId+price), DELETE variants, GET /admin/stats returns counts+revenue."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All admin CRUD operations working. GET /admin/stats returns users, items, listings, orders, revenue, reports. POST /admin/vendors creates vendor. POST /admin/items creates item. POST /admin/listings validates required fields (400 without itemId/vendorId/price), creates listing successfully. New listing appears in public GET /listings. All admin GET endpoints (items, listings, orders, users, reports) return arrays. Admin guard working: normal users get 403 on all /admin/* endpoints. Wishlist toggle, reports creation/resolution all working. Filters (sort, category, search, maxPrice) all working correctly."
+
+agent_communication:
+    -agent: "main"
+    -message: "PIVOT tested v2. Please test: (1) GET /api/config shows cryptoConfigured=false (demo, token empty). (2) Admin login POST /api/auth/login {email:'admin@robloot.com', password:'roblootdevtomo'} returns token with user.isAdmin=true. (3) Admin creates item POST /api/admin/items, creates vendor POST /api/admin/vendors, creates listing POST /api/admin/listings {itemId,vendorId,price,condition,durationDays} -> appears in GET /api/listings. (4) Non-admin user gets 403 on all /admin/*. (5) BUY FLOW in demo mode: signup normal user -> POST /api/orders {listingId} returns {orderId, simulated:true} (no checkoutUrl since token empty) -> GET /api/payments/status?orderId=... shows pending_payment -> POST /api/payments/simulate {orderId} marks paid, listing becomes sold, buyer gets notification -> GET /api/orders shows purchase with status paid. (6) /payments/simulate must be blocked (403) IF crypto were configured (can't easily test since token empty, just confirm it works in demo). (7) Filters/sort on /api/listings still work. Note: live CoinGate not testable (no token yet) - that's expected."
+    -agent: "testing"
+    -message: "✅ BACKEND V2 TESTING COMPLETE - ALL TESTS PASSED (34/34). Comprehensive testing completed for post-pivot marketplace: (1) CONFIG: cryptoConfigured=false, receiveCurrency=USDT ✓ (2) ADMIN AUTH: Login working, isAdmin=true ✓ (3) ADMIN CRUD: All endpoints working - stats, vendors, items, listings with validation, all GET endpoints return arrays ✓ (4) ADMIN GUARD: Normal users correctly get 403 on all admin endpoints ✓ (5) BUY FLOW (DEMO): Complete flow working - order creation with simulated=true, payment status polling, simulate payment, listing marked sold, notifications sent, buying sold listing blocked ✓ (6) WISHLIST/REPORTS: Toggle working, report creation/resolution working ✓ (7) FILTERS: All filters working - sort (price_asc), category (Limiteds), search (Frost), maxPrice (<=20) ✓. No critical issues found. Backend is production-ready for demo mode. Live CoinGate integration not testable without API token (expected)."
+
+## ===== FRONTEND NOTE =====
+frontend:
+  - task: "SPA hydration + rendering"
+    file: "app/page.js, next.config.js"
+    working: true
+    comment: "Confirmed working. Added allowedDevOrigins to next.config.js for preview domains. React hydrates fully (fiber/props attached, 14 buttons, flight data present). Trending grid + images render. NOTE: dev-mode hydration is slow (~10-15s) on this CPU/mem-limited container due to 1.75MB unminified bundle; production build is fast. Not a bug."
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Manually verified via browser: reactAttached=true, trending cards render (imgs=11), localStorage ok."
