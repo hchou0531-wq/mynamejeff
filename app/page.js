@@ -80,7 +80,7 @@ function Logo({ onClick }) {
 export default function App() {
   const api = useApi()
   const [user, setUser] = useState(null)
-  const [view, setView] = useState({ name: 'home' })
+  const [view, setView] = useState({ name: 'browse' })
   const [authOpen, setAuthOpen] = useState(false)
   const [authMode, setAuthMode] = useState('login')
   const [notifOpen, setNotifOpen] = useState(false)
@@ -122,7 +122,7 @@ export default function App() {
 
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-[#0a0912]/80 border-b border-white/5">
         <div className="container mx-auto px-4 h-16 flex items-center gap-4">
-          <Logo onClick={() => go('home')} />
+          <Logo onClick={() => go('browse')} />
           <nav className="hidden md:flex items-center gap-1 ml-2">
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse')}>Browse</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse', { category: 'Limiteds' })}>Limiteds</Button>
@@ -153,7 +153,6 @@ export default function App() {
       </header>
 
       <main className="relative z-10">
-        {view.name === 'home' && <HomeView api={api} go={go} />}
         {view.name === 'browse' && <BrowseView api={api} go={go} initialCategory={view.category} initialSearch={view.search} />}
         {view.name === 'item' && <ItemView api={api} go={go} listingId={view.listingId} user={user} requireAuth={requireAuth} cfg={cfg} />}
         {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} />}
@@ -165,7 +164,7 @@ export default function App() {
 
       <footer className="relative z-10 border-t border-white/5 mt-20 py-10">
         <div className="container mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-slate-500">
-          <Logo onClick={() => go('home')} />
+          <Logo onClick={() => go('browse')} />
           <p className="text-center max-w-xl">An original marketplace demo. Not affiliated with or endorsed by Roblox Corporation. Payments are processed in cryptocurrency via CoinGate.</p>
           <span className="flex items-center gap-1"><Bitcoin className="w-3.5 h-3.5" /> Crypto payments</span>
         </div>
@@ -302,14 +301,55 @@ function HomeView({ api, go }) {
   )
 }
 
+function MarketCard({ listing, onOpen }) {
+  const sold = listing.status && listing.status !== 'active'
+  return (
+    <Card onClick={() => onOpen(listing)} className="group relative overflow-hidden bg-[#0e0d16] border border-white/[0.06] rounded-2xl hover:border-violet-500/40 hover:shadow-[0_8px_30px_-12px_rgba(139,92,246,0.45)] transition-all cursor-pointer">
+      <div className="absolute top-3 right-3 z-10 w-7 h-7 rounded-lg bg-black/60 backdrop-blur flex items-center justify-center border border-white/10" title="Crypto accepted"><Bitcoin className="w-3.5 h-3.5 text-amber-400" /></div>
+      <div className="p-4 pb-2">
+        <div className="aspect-square rounded-xl overflow-hidden bg-gradient-to-b from-white/[0.04] to-transparent">
+          <img src={listing.item.imageUrl} alt={listing.item.name} className="w-full h-full object-cover group-hover:scale-[1.06] transition-transform duration-500" />
+        </div>
+      </div>
+      <div className="px-4 pb-4">
+        <p className="font-semibold text-sm text-center truncate mb-3">{listing.item.name}</p>
+        <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
+          <div><p className="text-[10px] uppercase tracking-widest text-slate-500">RAP</p><p className="text-sm font-bold text-slate-300">{rbx(listing.price)}</p></div>
+          <div className="text-right"><p className="text-[10px] uppercase tracking-widest text-slate-500">From</p><p className="text-sm font-black text-emerald-400">{usd(listing.price)}</p></div>
+        </div>
+      </div>
+      {sold && <div className="absolute inset-0 bg-black/65 flex items-center justify-center"><Badge className="bg-red-500/90 text-white">SOLD</Badge></div>}
+    </Card>
+  )
+}
+
+function SoldStripCard({ listing }) {
+  return (
+    <div className="relative shrink-0 w-36 rounded-xl bg-[#0e0d16] border border-white/[0.06] p-3">
+      <span className="absolute top-2 left-2 z-10 text-[11px] font-black text-emerald-400 bg-black/70 px-2 py-0.5 rounded-md border border-white/5">{usd(listing.price)}</span>
+      <div className="aspect-square rounded-lg overflow-hidden mb-2 bg-white/[0.03]"><img src={listing.item.imageUrl} className="w-full h-full object-cover" alt="" /></div>
+      <p className="text-xs font-medium text-center truncate text-slate-300">{listing.item.name}</p>
+    </div>
+  )
+}
+
 function BrowseView({ api, go, initialCategory, initialSearch }) {
   const [listings, setListings] = useState([])
+  const [trending, setTrending] = useState([])
+  const [sold, setSold] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState(initialSearch || '')
   const [category, setCategory] = useState(initialCategory || 'All')
   const [condition, setCondition] = useState('All')
   const [sort, setSort] = useState('newest')
+  const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
+
+  useEffect(() => {
+    api('/sold').then(d => setSold(d.listings || [])).catch(() => {})
+    api('/listings?sort=popular').then(d => setTrending((d.listings || []).slice(0, 10))).catch(() => {})
+  }, [api])
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -317,35 +357,94 @@ function BrowseView({ api, go, initialCategory, initialSearch }) {
       if (search) p.set('search', search)
       if (category !== 'All') p.set('category', category)
       if (condition !== 'All') p.set('condition', condition)
+      if (minPrice) p.set('minPrice', minPrice)
       if (maxPrice) p.set('maxPrice', maxPrice)
       p.set('sort', sort)
       const d = await api(`/listings?${p.toString()}`); setListings(d.listings || [])
     } catch (e) { toast.error(e.message) } finally { setLoading(false) }
-  }, [api, search, category, condition, sort, maxPrice])
+  }, [api, search, category, condition, sort, minPrice, maxPrice])
   useEffect(() => { load() }, [category, condition, sort])
-  useEffect(() => { const t = setTimeout(load, 350); return () => clearTimeout(t) }, [search, maxPrice])
+  useEffect(() => { const t = setTimeout(load, 350); return () => clearTimeout(t) }, [search, minPrice, maxPrice])
+
+  const reset = () => { setSearch(''); setCategory('All'); setCondition('All'); setSort('newest'); setMinPrice(''); setMaxPrice('') }
+
   return (
     <div className="container mx-auto px-4 py-8">
-      <div className="flex flex-col md:flex-row gap-6">
-        <aside className="md:w-64 shrink-0 space-y-5">
-          <div className="relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" /><Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items..." className="pl-9 bg-[#12101f] border-white/10" /></div>
-          <div><p className="text-xs font-bold uppercase text-slate-500 mb-2">Category</p><div className="flex flex-wrap gap-2">{CATEGORIES.map(c => <button key={c} onClick={() => setCategory(c)} className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${category === c ? 'bg-violet-500 text-white' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}>{c}</button>)}</div></div>
-          <div><p className="text-xs font-bold uppercase text-slate-500 mb-2">Condition</p><Select value={condition} onValueChange={setCondition}><SelectTrigger className="bg-[#12101f] border-white/10"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{CONDITIONS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select></div>
-          <div><p className="text-xs font-bold uppercase text-slate-500 mb-2">Max Price (USD)</p><Input type="number" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder="Any" className="bg-[#12101f] border-white/10" /></div>
-        </aside>
-        <div className="flex-1">
-          <div className="flex items-center justify-between mb-5">
-            <h1 className="text-2xl font-black">{category === 'All' ? 'All Items' : category} <span className="text-slate-500 text-base font-medium">({listings.length})</span></h1>
-            <Select value={sort} onValueChange={setSort}><SelectTrigger className="w-44 bg-[#12101f] border-white/10"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100"><SelectItem value="newest">Newest</SelectItem><SelectItem value="popular">Most Popular</SelectItem><SelectItem value="price_asc">Price: Low to High</SelectItem><SelectItem value="price_desc">Price: High to Low</SelectItem></SelectContent></Select>
+      <div className="flex flex-col md:flex-row gap-8">
+        {/* Sidebar */}
+        <aside className="md:w-60 shrink-0">
+          <div className="md:sticky md:top-20 space-y-6">
+            <div>
+              <h2 className="text-lg font-black mb-3">Market</h2>
+              <div className="space-y-0.5">
+                {CATEGORIES.map(c => (
+                  <button key={c} onClick={() => setCategory(c)} className={`block w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${category === c ? 'bg-violet-500/15 text-violet-300' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>{c === 'All' ? 'All Items' : c}</button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-4">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Filters</h3>
+              <div>
+                <p className="text-xs text-slate-400 mb-1.5">Price (USD)</p>
+                <div className="flex items-center gap-2">
+                  <Input type="number" value={minPrice} onChange={e => setMinPrice(e.target.value)} placeholder="Min" className="bg-[#0e0d16] border-white/10 h-9" />
+                  <span className="text-slate-600">-</span>
+                  <Input type="number" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder="Max" className="bg-[#0e0d16] border-white/10 h-9" />
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-1.5">Condition</p>
+                <Select value={condition} onValueChange={setCondition}><SelectTrigger className="bg-[#0e0d16] border-white/10 h-9"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{CONDITIONS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-1.5">Sort by</p>
+                <Select value={sort} onValueChange={setSort}><SelectTrigger className="bg-[#0e0d16] border-white/10 h-9"><SelectValue /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100"><SelectItem value="newest">Newest</SelectItem><SelectItem value="popular">Most Popular</SelectItem><SelectItem value="price_asc">Price: Low to High</SelectItem><SelectItem value="price_desc">Price: High to Low</SelectItem></SelectContent></Select>
+              </div>
+              <Button variant="outline" onClick={reset} className="w-full border-white/10 text-slate-300 hover:text-white">Reset Filters</Button>
+            </div>
           </div>
-          {loading ? <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="aspect-[3/4] rounded-xl bg-white/5 animate-pulse" />)}</div>
-            : listings.length === 0 ? <div className="py-24 text-center text-slate-400"><Package className="w-12 h-12 mx-auto mb-3 opacity-40" />No items match your filters.</div>
-            : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{listings.map(l => <ItemCard key={l.id} listing={l} onOpen={() => go('item', { listingId: l.id })} />)}</div>}
+        </aside>
+
+        {/* Main */}
+        <div className="flex-1 min-w-0 space-y-10">
+          {/* Recently Sold */}
+          {sold.length > 0 && (
+            <section>
+              <h2 className="text-sm font-black uppercase tracking-widest text-slate-400 mb-3">Recently Sold</h2>
+              <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">{sold.map(l => <SoldStripCard key={l.id} listing={l} />)}</div>
+            </section>
+          )}
+
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search the marketplace..." className="pl-12 h-12 bg-[#0e0d16] border-white/10 rounded-xl text-base" />
+          </div>
+
+          {/* Trending */}
+          {trending.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-black flex items-center gap-2"><TrendingUp className="w-5 h-5 text-fuchsia-400" /> Trending Right Now</h2></div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{trending.slice(0, 5).map(l => <MarketCard key={l.id} listing={l} onOpen={() => go('item', { listingId: l.id })} />)}</div>
+            </section>
+          )}
+
+          {/* All Listings */}
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <h2 className="text-xl font-black">All Listings</h2>
+              <span className="text-slate-500 text-sm">{listings.length} items</span>
+            </div>
+            {loading ? <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="aspect-[4/5] rounded-2xl bg-white/[0.03] animate-pulse" />)}</div>
+              : listings.length === 0 ? <div className="py-24 text-center text-slate-400"><Package className="w-12 h-12 mx-auto mb-3 opacity-40" />No items match your filters.</div>
+              : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{listings.map(l => <MarketCard key={l.id} listing={l} onOpen={() => go('item', { listingId: l.id })} />)}</div>}
+          </section>
         </div>
       </div>
     </div>
   )
 }
+
 
 function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
   const [data, setData] = useState(null)
@@ -649,7 +748,7 @@ function AdminView({ api, user, go, cfg }) {
           {users.map(u => (
             <Card key={u.id} className="p-3 bg-[#12101f]/60 border-white/5 flex items-center gap-3">
               <img src={u.avatarUrl} className="w-9 h-9 rounded-full bg-white/10" alt="" />
-              <div className="flex-1"><p className="font-semibold text-sm">{u.username} {u.isAdmin && <Badge className="ml-1 bg-fuchsia-500/20 text-fuchsia-300">admin</Badge>}</p><p className="text-xs text-slate-400">{u.email} · joined {new Date(u.createdAt).toLocaleDateString()}</p></div>
+              <div className="flex-1"><div className="font-semibold text-sm flex items-center gap-1">{u.username} {u.isAdmin && <Badge className="bg-fuchsia-500/20 text-fuchsia-300">admin</Badge>}</div><p className="text-xs text-slate-400">{u.email} · joined {new Date(u.createdAt).toLocaleDateString()}</p></div>
               {!u.isAdmin && <Button size="sm" variant="destructive" onClick={() => removeUser(u.id)}><Trash2 className="w-3.5 h-3.5" /></Button>}
             </Card>
           ))}

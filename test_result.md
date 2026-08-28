@@ -296,3 +296,74 @@ frontend:
         -working: true
         -agent: "main"
         -comment: "Manually verified via browser: reactAttached=true, trending cards render (imgs=11), localStorage ok."
+
+## ===== UPDATE 3: hydration fix + remove landing + browse redesign =====
+frontend:
+  - task: "Fix hydration error in AdminView users tab"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Bug: <Badge> (renders div) was inside <p> in admin Users list -> 'div cannot be descendant of p' hydration error. Fixed: changed the wrapping <p> to a <div>."
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Bug: <Badge> (renders div) was inside <p> in admin Users list -> 'div cannot be descendant of p' hydration error. Fixed: changed the wrapping <p> to a <div>."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ CRITICAL BUG FIXED - Tested Admin Console Users tab. NO hydration error 'div cannot be descendant of p' found in console. Users list renders correctly with admin badges. Console only shows 2 minor warnings about missing Description in DialogContent (accessibility, not critical). The reported hydration bug is completely resolved."
+  - task: "Remove landing page; open on Browse"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Default view is now 'browse'. Logo (header+footer) navigates to browse. Home hero removed from render."
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Default view is now 'browse'. Logo (header+footer) navigates to browse. Home hero removed from render."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED - App opens directly on Browse marketplace. No landing hero page. Found all 8 category buttons in sidebar (All Items, Limiteds, Accessories, UGC, Collectibles, Gear, Faces, Bundles). Market heading and Filters section present. Logo in header and footer navigates to Browse."
+  - task: "Browse redesign (Recently Sold strip, Trending row, All Listings grid, sticky filters)"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "New MarketCard (RAP/From layout + crypto icon) and SoldStripCard. Sidebar: Market categories, Price min/max, Condition, Sort, Reset. Uses GET /api/sold, /api/listings?sort=popular, and filtered /api/listings."
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New MarketCard (RAP/From layout + crypto icon) and SoldStripCard. Sidebar: Market categories, Price min/max, Condition, Sort, Reset. Uses GET /api/sold, /api/listings?sort=popular, and filtered /api/listings."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED - All Browse sections working correctly. (1) Recently Sold: horizontal strip visible with 6 sold items showing green prices. (2) Trending Right Now: row with 5 trending items. (3) All Listings: grid showing 17 items. (4) MarketCard: Found 22 'RAP' labels, 22 'From' labels, 23 crypto icons - RAP/From price layout confirmed. (5) Filters: Category filter (Limiteds) works, Search filter (typed 'Frost') works, Sort (Price: Low to High) works, Reset Filters button works. All filter interactions update the listings grid correctly."
+backend_v3:
+  - task: "GET /api/sold public endpoint"
+    file: "app/api/[[...path]]/route.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Returns recent sold listings (status sold), auto-generates 8 sold samples if none exist (ensureSoldSamples)."
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Returns recent sold listings (status sold), auto-generates 8 sold samples if none exist (ensureSoldSamples)."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED - GET /api/sold endpoint working. Recently Sold section displays 6 sold items with prices in the horizontal strip. Sold items show green price badges."
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  run_ui: false
+
+agent_communication:
+    -agent: "main"
+    -message: "Please run FRONTEND UI tests. IMPORTANT: dev-mode hydration on this container is SLOW (~10-15s) due to a large unminified bundle - use generous waits (wait up to 20s for interactivity/effects before asserting). Verify: (1) App opens directly on the Browse marketplace (no landing hero). (2) Browse renders 'Recently Sold' horizontal strip, 'Trending Right Now' row, and 'All Listings' grid; sidebar filters (category click, price min/max, condition, sort, reset) update results. (3) Clicking a card opens the item detail page. (4) Login as ADMIN (admin@robloot.com / roblootdevtomo) -> Admin Console loads; open the 'Users' tab and CONFIRM NO console hydration error 'div cannot be a descendant of p' appears (this was the reported bug). Also verify admin can open New Item / New Listing dialogs. (5) Signup a normal user and do the demo buy flow: open an item -> Buy with Crypto -> in demo mode it goes to an order status page -> 'Simulate confirmed payment' -> shows Payment Confirmed. Report console errors if any."
+    -agent: "testing"
+    -message: "✅ ALL FRONTEND TESTS PASSED (6/6). Comprehensive UI testing completed with 18-20s hydration wait times. RESULTS: (1) ✅ Landing Removed: App opens directly on Browse marketplace with left sidebar (Market categories + Filters). (2) ✅ Browse Sections: Recently Sold strip (6 items), Trending Right Now row (5 items), All Listings grid (17 items) all present. MarketCard shows RAP/From price layout with crypto icons (22 RAP labels, 22 From labels, 23 crypto icons). (3) ✅ Filters: Category (Limiteds), Search (Frost), Sort (Price: Low to High), Reset Filters all working correctly. (4) ✅ Item Page: Click card opens detail page with 'Buy with Crypto' button, back navigation works. (5) ✅ CRITICAL - Admin Hydration Bug FIXED: Logged in as admin@robloot.com, opened Users tab, NO hydration error 'div cannot be descendant of p' found in console. Users list renders correctly. New Item and New Listing dialogs open successfully. (6) ✅ Demo Buy Flow: Signup successful (buyer44256), clicked item, Buy with Crypto, Continue to Payment, order status page shows 'Awaiting Payment', clicked 'Simulate confirmed payment (demo)', 'Payment Confirmed!' displayed. Console: Only 2 minor warnings about missing Description in DialogContent (accessibility, not critical). NO hydration errors. All major flows working perfectly."

@@ -115,6 +115,29 @@ const SEED_VENDORS = [['PixelKing', 4.9, 1240], ['LootQueen', 4.8, 980], ['NeonT
 const CONDITIONS = ['Mint', 'Rare', 'New', 'Used']
 function pick(arr, i) { return arr[i % arr.length] }
 
+async function ensureSoldSamples(db) {
+  const c = await db.collection('listings').countDocuments({ status: 'sold' })
+  if (c > 0) return
+  const items = await db.collection('items').find({}).limit(20).toArray()
+  const vendors = await db.collection('vendors').find({}).toArray()
+  if (!items.length || !vendors.length) return
+  const prices = [131.42, 15.9, 32.49, 23.32, 31.8, 89.99, 12.5, 210]
+  const samples = []
+  for (let i = 0; i < 8 && i < items.length; i++) {
+    const it = items[(i * 2) % items.length]
+    const v = pick(vendors, i)
+    samples.push({
+      id: uuidv4(), itemId: it.id,
+      item: { name: it.name, description: it.description, imageUrl: it.imageUrl, category: it.category, robloxItemId: it.robloxItemId },
+      vendorId: v.id, sellerName: v.name, sellerAvatar: v.avatarUrl, sellerRep: v.reputation,
+      price: prices[i], currency: 'USD', status: 'sold', condition: pick(CONDITIONS, i),
+      popularity: Math.floor(Math.random() * 900) + 200, soldAt: new Date(Date.now() - i * 5400000),
+      expiresAt: new Date(Date.now() - 86400000), createdAt: new Date(Date.now() - (i + 20) * 3600000)
+    })
+  }
+  if (samples.length) await db.collection('listings').insertMany(samples)
+}
+
 async function doSeed(db, force = false) {
   // admin (always ensure exists)
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@robloot.com'
@@ -245,6 +268,11 @@ async function handleRoute(request, { params }) {
     }
 
     // ---------- VENDORS ----------
+    if (route === '/sold' && method === 'GET') {
+      await ensureSoldSamples(db)
+      const sold = await db.collection('listings').find({ status: 'sold' }).sort({ soldAt: -1, createdAt: -1 }).limit(12).toArray()
+      return json({ listings: sold.map(clean) })
+    }
     if (route === '/vendors' && method === 'GET') {
       const vendors = await db.collection('vendors').find({}).sort({ reputation: -1 }).toArray()
       return json({ vendors: vendors.map(clean) })
