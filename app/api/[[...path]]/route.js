@@ -92,14 +92,15 @@ function parseRobloxAssetId(value) {
   const s = String(value).trim()
   if (/^\d+$/.test(s)) { const n = Number(s); return n > 0 ? n : null }
   try {
-    const url = new URL(s)
-    if (!/roblox\.com$/.test(url.hostname.replace('www.', ''))) return null
-    const m = url.pathname.match(/\/(?:catalog|library|item)\/(\d+)/)
-    if (m) return Number(m[1])
-    const id = url.searchParams.get('id') || url.searchParams.get('Id')
+    const url = new URL(s.startsWith('http') ? s : ('https://' + s))
+    const host = url.hostname.replace(/^www\./, '')
+    if (!/roblox\.com$/.test(host)) { const m = s.match(/(\d{4,})/); return m ? Number(m[1]) : null }
+    const pm = url.pathname.match(/\/(\d{2,})/)
+    if (pm) return Number(pm[1])
+    const id = url.searchParams.get('id') || url.searchParams.get('Id') || url.searchParams.get('ID') || url.searchParams.get('assetId') || url.searchParams.get('itemId')
     if (id && /^\d+$/.test(id)) return Number(id)
     return null
-  } catch { return null }
+  } catch { const m = s.match(/(\d{4,})/); return m ? Number(m[1]) : null }
 }
 function robloxHeaders(json = false) {
   const h = { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }
@@ -128,11 +129,25 @@ async function robloxGetJson(url, options = {}, attempts = 2) {
 async function robloxLookup(input) {
   const assetId = parseRobloxAssetId(input)
   if (!assetId) throw new Error('Could not read an asset ID. Paste a link like https://www.roblox.com/catalog/1028606/Name')
-  const catalog = await robloxGetJson('https://catalog.roblox.com/v1/catalog/items/details', {
-    method: 'POST', body: JSON.stringify({ items: [{ itemType: 'Asset', id: assetId }] })
-  })
-  const item = (catalog && catalog.data && catalog.data[0]) || null
-  if (!item) throw new Error('Item not found on Roblox')
+  let name = null, description = '', lowestResalePrice = null, collectibleItemId = null
+  try {
+    const catalog = await robloxGetJson('https://catalog.roblox.com/v1/catalog/items/details', {
+      method: 'POST', body: JSON.stringify({ items: [{ itemType: 'Asset', id: assetId }] })
+    })
+    const item = catalog && catalog.data && catalog.data[0]
+    if (item) { name = item.name; description = item.description || ''; lowestResalePrice = item.lowestResalePrice ?? item.lowestPrice ?? item.price ?? null; collectibleItemId = item.collectibleItemId || null }
+  } catch (e) {}
+  if (!name) {
+    // Fallback: legacy economy asset details
+    try {
+      const d = await robloxGetJson(`https://economy.roblox.com/v2/assets/${assetId}/details`)
+      name = d.Name || d.name || null
+      description = description || d.Description || ''
+      if (lowestResalePrice == null) lowestResalePrice = d.PriceInRobux ?? null
+      if (!collectibleItemId) collectibleItemId = d.CollectibleItemId || null
+    } catch (e) {}
+  }
+  if (!name) throw new Error('Roblox did not return this item (it may be rate-limiting the server or the ID is not a catalog asset). Try again in a moment, or enter details manually.')
   let imageUrl = null
   for (let t = 0; t < 3 && !imageUrl; t++) {
     try {
@@ -144,22 +159,13 @@ async function robloxLookup(input) {
     if (!imageUrl) await new Promise(r => setTimeout(r, 500))
   }
   let rap = null
-  const collectibleItemId = item.collectibleItemId || null
   if (collectibleItemId) {
     try { const m = await robloxGetJson(`https://apis.roblox.com/marketplace-sales/v1/item/${encodeURIComponent(collectibleItemId)}/resale-data`); rap = m.recentAveragePrice ?? null } catch (e) {}
   }
   if (rap == null) {
     try { const l = await robloxGetJson(`https://economy.roblox.com/v1/assets/${assetId}/resale-data`); rap = l.recentAveragePrice ?? null } catch (e) {}
   }
-  return {
-    assetId,
-    name: item.name || `Roblox Item ${assetId}`,
-    description: item.description || '',
-    imageUrl,
-    lowestResalePrice: item.lowestResalePrice ?? item.lowestPrice ?? item.price ?? null,
-    rap,
-    collectibleItemId
-  }
+  return { assetId, name, description, imageUrl, lowestResalePrice, rap, collectibleItemId }
 }
 
 // ---------------- Seed ----------------

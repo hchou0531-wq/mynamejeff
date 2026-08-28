@@ -475,3 +475,40 @@ agent_communication:
     -message: "Test UPDATE 5. Admin login admin@robloot.com/roblootdevtomo. (1) IMAGE PERSIST: POST /api/admin/listings {name:'ImgTest', imageUrl:'https://tr.rbxcdn.com/EXAMPLE/420/420/Hat/Png/noFilter', category:'Limiteds', stock:1, price:5} -> GET /api/listings and GET /api/listings/:id must return item.imageUrl EXACTLY equal to that URL (not an unsplash default). (2) EDIT STOCK endpoint: create a listing with stock:1; PUT /api/admin/listings/:id {stock:5} -> listing.stock=5, status 'active'. PUT {stock:0} -> status 'sold'. PUT {price:99.99} -> price updated. PUT with a NORMAL user token -> 403. PUT with empty body -> 400. (3) Regression: roblox-lookup for 1028606 still returns imageUrl (a tr.rbxcdn.com URL) and rap. Do NOT modify code."
     -agent: "testing"
     -message: "✅ UPDATE 5 BACKEND TESTING COMPLETE - ALL TESTS PASSED (11/11). Comprehensive testing completed for image persistence + edit stock endpoint: (1) IMAGE PERSISTENCE: POST /api/admin/listings with imageUrl stores exact URL (not replaced with default), verified via GET /api/listings/:id and GET /api/listings - all return exact imageUrl 'https://tr.rbxcdn.com/EXAMPLEHASH/420/420/Hat/Png/noFilter' ✓ (2) EDIT STOCK ENDPOINT: PUT /api/admin/listings/:id working correctly - stock=5 sets status=active, stock=0 sets status=sold, stock=3 relists (status=active), price=99.99 updates price, normal user returns 403, empty body returns 400 ✓ (3) REGRESSION: Roblox lookup returns valid item with tr.rbxcdn.com imageUrl, rap=1302, lowestResalePrice=1300 ✓. No critical issues found. Backend UPDATE 5 is production-ready."
+
+## ===== UPDATE 6: import 'request failed' investigation + robustness =====
+findings:
+  - "Server + client fetch path both return HTTP 200 with real data (verified via public URL and in-browser evaluate). No Roblox API key needed. User's 'request failed' is most likely a stale cached client build."
+changes:
+  - "Broadened parseRobloxAssetId (handles bare 'roblox.com/catalog/ID', missing https, ?id=, first numeric path segment)."
+  - "robloxLookup now falls back to economy v2 asset details for name/desc/price if catalog details fails; clearer error messages."
+  - "Client useApi now: 45s AbortController timeout, handles non-JSON responses, and error message includes HTTP status (so 'request failed' now shows e.g. 'HTTP 404/502') for diagnosis."
+  - "Cleared leftover test listings (ImgTest/StockTest with fake image URLs). Marketplace empty."
+frontend:
+  - task: "Admin Import from Roblox end-to-end (reported: request failed)"
+    file: "app/page.js"
+    working: true
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    comment: "Login admin -> Import from Roblox -> paste link -> Detect auto-fills editable name/desc/image/RAP/robux -> set stock+price -> List -> appears on Browse with REAL roblox image."
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "User reported 'request failed' when importing from Roblox. Need to verify the complete flow in-browser."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ COMPLETE FLOW WORKING PERFECTLY - All 8 steps passed. (1) Site loaded, Browse marketplace visible (empty initially). (2) Admin login successful (admin@robloot.com). (3) Import dialog opened. (4) CRITICAL: POST /api/admin/roblox-lookup returned HTTP 200 with complete data for assetId 20573078 (Shaggy): name, description, imageUrl (tr.rbxcdn.com), rap=1594, collectibleItemId. (5) Form auto-filled correctly: Name='Shaggy', Description='It looks cooler on your guy, I promise.', Image URL (real Roblox CDN), RAP=1594, Robux=1594, image preview visible. (6) Set Stock=3 and Price=$12.50, clicked 'List on Marketplace' - listing created successfully, dialog closed. (7) Browse page shows 'Shaggy' item in both Trending and All Listings sections with '3 left' and '$12.50' price visible. (8) Item detail page shows correctly: Buy with Crypto button, RAP=1,594, Robux=1,594, Stock=3, Roblox Asset ID=20573078, real Roblox CDN image visible (https://tr.rbxcdn.com/180DAY-1985eb1fd025811e5510ee3b9e123318/420/420/HairAccessory/Png/noFilter). NO console errors. NO 'request failed' error reproduced. User's issue was likely: (a) temporary Roblox API downtime/rate-limiting, (b) stale cached client build, (c) network timeout on user's end, or (d) different URL that failed. Current implementation is robust and working correctly."
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+  run_ui: false
+
+agent_communication:
+    -agent: "main"
+    -message: "Verify the admin Roblox import flow in-browser (user reported 'request failed'). NOTE: dev hydration is slow (~12-16s) - wait generously. Steps: (1) Load site (opens on Browse, currently EMPTY marketplace). (2) Login via 'Login' button with admin@robloot.com / roblootdevtomo -> should land on Admin Console. (3) Click 'Import from Roblox'. (4) In the link field type: https://www.roblox.com/catalog/20573078/Shaggy and click 'Detect'. EXPECT: a success toast and the form auto-fills Name='Shaggy', a Description, an Image preview (real tr.rbxcdn.com image), RAP and Robux value fields populated. Price field must be EMPTY (manual). (5) Set Stock=3 and Your Price (USD)=12.50, then click 'List on Marketplace'. EXPECT success toast + dialog closes. (6) Go to Browse -> the 'Shaggy' item appears in All Listings WITH the real Roblox image (not blank), showing '3 left' and 'From $12.50'. Capture any console errors and the exact text of any error toast. Report the network response status for POST /api/admin/roblox-lookup."
+    -agent: "testing"
+    -message: "✅ IMPORT FROM ROBLOX FLOW - FULLY WORKING. Comprehensive end-to-end testing completed. The user's reported 'request failed' issue is NOT reproducible. API returns HTTP 200 with valid Roblox data, form auto-fills correctly with real image from tr.rbxcdn.com, listing is created successfully, and item appears in Browse with the real Roblox image. All 8 test steps passed without errors. The issue was likely temporary (Roblox API downtime, user's network, or stale cache). Current implementation is production-ready and robust."

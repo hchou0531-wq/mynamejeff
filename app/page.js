@@ -27,12 +27,24 @@ const usd = (n) => `$${Number(n).toFixed(2)}`
 function useApi() {
   return useCallback(async (path, opts = {}) => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('rbx_token') : null
-    const res = await fetch(`/api${path}`, {
-      ...opts,
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) }
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error || 'Request failed')
+    const ctrl = new AbortController()
+    const to = setTimeout(() => ctrl.abort(), 45000)
+    let res
+    try {
+      res = await fetch(`/api${path}`, {
+        ...opts, signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) }
+      })
+    } catch (e) {
+      clearTimeout(to)
+      throw new Error(e.name === 'AbortError' ? 'Request timed out — please try again' : 'Network error — check your connection')
+    }
+    clearTimeout(to)
+    const ct = res.headers.get('content-type') || ''
+    let data = {}
+    if (ct.includes('application/json')) data = await res.json().catch(() => ({}))
+    else { const t = await res.text().catch(() => ''); if (t && res.ok) return t; data = {} }
+    if (!res.ok) throw new Error(data.error || `Request failed (HTTP ${res.status})`)
     return data
   }, [])
 }
