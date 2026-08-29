@@ -370,6 +370,45 @@ function claimMessage(d, orderNumber) {
   const c = d.credentials || {}
   return `\ud83d\udc64 **${d.title}**\nUsername: \`${c.username}\`\nPassword: \`${c.password}\`${c.email ? `\nEmail: \`${c.email}\`` : ''}${c.notes ? `\nNotes: ${c.notes}` : ''}`
 }
+// ---------------- Discord REST helpers (bot token) ----------------
+async function getBotCfg(db) { return (await db.collection('settings').findOne({ id: 'botConfig' })) || {} }
+async function discordApi(botToken, method, apiPath, body) {
+  try {
+    const res = await fetch(`https://discord.com/api/v10${apiPath}`, {
+      method,
+      headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
+      body: body != null ? JSON.stringify(body) : undefined
+    })
+    const text = await res.text()
+    let data
+    try { data = text ? JSON.parse(text) : {} } catch { data = { raw: text } }
+    return { ok: res.ok, status: res.status, data }
+  } catch (e) { return { ok: false, status: 0, data: { message: String(e) } } }
+}
+function buildDiscordEmbed(e) {
+  const embed = {}
+  if (e.title) embed.title = String(e.title).slice(0, 256)
+  if (e.description) embed.description = String(e.description).slice(0, 4096)
+  if (e.url) embed.url = String(e.url)
+  if (e.color != null && e.color !== '') {
+    let c = e.color
+    if (typeof c === 'string') { c = parseInt(c.replace('#', ''), 16) }
+    if (!isNaN(c)) embed.color = c
+  }
+  if (e.authorName) embed.author = { name: String(e.authorName).slice(0, 256) }
+  if (e.thumbnailUrl) embed.thumbnail = { url: String(e.thumbnailUrl) }
+  if (e.imageUrl) embed.image = { url: String(e.imageUrl) }
+  if (e.footerText) embed.footer = { text: String(e.footerText).slice(0, 2048) }
+  if (Array.isArray(e.fields) && e.fields.length) {
+    embed.fields = e.fields.filter(f => f && (f.name || f.value)).slice(0, 25).map(f => ({
+      name: String(f.name || '\u200b').slice(0, 256),
+      value: String(f.value || '\u200b').slice(0, 1024),
+      inline: !!f.inline
+    }))
+  }
+  return embed
+}
+
 const REGULAR_TYPES = [[8, 'Hats'], [41, 'Hair'], [42, 'Face Accessories'], [43, 'Neck'], [44, 'Shoulder'], [45, 'Front'], [46, 'Back'], [47, 'Waist'], [18, 'Faces'], [19, 'Gear'], [11, 'Shirts'], [12, 'Pants']]
 async function robloxRegularItems(userId) {
   const results = await Promise.allSettled(REGULAR_TYPES.map(([tid]) => robloxGetJson(`https://inventory.roblox.com/v2/users/${userId}/inventory/${tid}?limit=25&sortOrder=Desc`)))
@@ -557,12 +596,30 @@ async function handleRoute(request, { params }) {
       let body = {}
       try { body = JSON.parse(raw) } catch (e) {}
       if (body.type === 1) return json({ type: 1 }) // PING
+      // Autocomplete (type 4): suggest saved embed names for /embed
+      if (body.type === 4) {
+        if (body.data?.name === 'embed') {
+          const foc = (body.data.options || []).find(o => o.focused)
+          const q = (foc?.value || '').toString().toLowerCase()
+          const all = await db.collection('embeds').find({}).sort({ createdAt: -1 }).toArray()
+          const choices = all.filter(e => !q || e.name.toLowerCase().includes(q)).slice(0, 25).map(e => ({ name: e.name.slice(0, 100), value: e.name.slice(0, 100) }))
+          return json({ type: 8, data: { choices } })
+        }
+        return json({ type: 8, data: { choices: [] } })
+      }
       if (body.type === 2 && body.data?.name === 'claim') {
         const opt = (body.data.options || []).find(o => o.name === 'order')
         const orderNumber = opt?.value
         const discordUserId = body.member?.user?.id || body.user?.id
         const d = await claimDeliverable(db, orderNumber, discordUserId)
         return json({ type: 4, data: { content: claimMessage(d, orderNumber), flags: 64 } })
+      }
+      if (body.type === 2 && body.data?.name === 'embed') {
+        const opt = (body.data.options || []).find(o => o.name === 'name')
+        const nm = (opt?.value || '').toString()
+        const e = await db.collection('embeds').findOne({ name_lc: nm.toLowerCase() })
+        if (!e) return json({ type: 4, data: { content: `\u274c No embed named "${nm}" was found.`, flags: 64 } })
+        return json({ type: 4, data: { embeds: [buildDiscordEmbed(e)] } }) // public post
       }
       return json({ type: 4, data: { content: 'Unknown command', flags: 64 } })
     }
@@ -940,6 +997,91 @@ async function handleRoute(request, { params }) {
         await db.collection(coll).updateOne({ id: b.id }, { $set: { status: 'sold', claimOrderNumber: String(b.orderNumber), assignedAt: new Date() } })
         return json({ success: true })
       }
+
+      // ----- Discord Embeds (saved rich embeds for /embed) -----
+      if (route === '/admin/dashboard/embeds' && method === 'GET') {
+        return json({ embeds: (await db.collection('embeds').find({}).sort({ createdAt: -1 }).toArray()).map(clean) })
+      }
+      if (route === '/admin/dashboard/embeds' && method === 'POST') {
+        const b = await request.json()
+        const name = (b.name || '').toString().trim()
+        if (!name) return json({ error: 'Embed name is required' }, 400)
+        if (!(b.title || b.description)) return json({ error: 'Add a title or a description' }, 400)
+        const fields = Array.isArray(b.fields)
+          ? b.fields.filter(f => f && (f.name || f.value)).slice(0, 5).map(f => ({ name: (f.name || '').toString(), value: (f.value || '').toString(), inline: !!f.inline }))
+          : []
+        const doc = {
+          name, name_lc: name.toLowerCase(),
+          title: (b.title || '').toString(), description: (b.description || '').toString(),
+          color: (b.color || '').toString(), imageUrl: (b.imageUrl || '').toString(), thumbnailUrl: (b.thumbnailUrl || '').toString(),
+          footerText: (b.footerText || '').toString(), authorName: (b.authorName || '').toString(), fields, updatedAt: new Date()
+        }
+        // Edit by id, else upsert by name (case-insensitive)
+        let target = b.id ? await db.collection('embeds').findOne({ id: b.id }) : await db.collection('embeds').findOne({ name_lc: name.toLowerCase() })
+        if (target) {
+          await db.collection('embeds').updateOne({ id: target.id }, { $set: doc })
+          return json({ embed: clean(await db.collection('embeds').findOne({ id: target.id })) })
+        }
+        const rec = { id: uuidv4(), ...doc, createdAt: new Date() }
+        await db.collection('embeds').insertOne(rec)
+        return json({ embed: clean(rec) })
+      }
+      if (route.startsWith('/admin/dashboard/embeds/') && path[4] === 'post' && method === 'POST') {
+        const e = await db.collection('embeds').findOne({ id: path[3] })
+        if (!e) return json({ error: 'Embed not found' }, 404)
+        const cfg = await getBotCfg(db)
+        const token = cfg.discordBotToken
+        const b = await request.json().catch(() => ({}))
+        const channelId = (b.channelId || '').toString().trim() || cfg.discordChannelId
+        if (!token) return json({ error: 'Save your Discord bot token first (General tab).' }, 400)
+        if (!channelId) return json({ error: 'Set an Orders Channel ID (General tab) or pass a channelId.' }, 400)
+        const r = await discordApi(token, 'POST', `/channels/${channelId}/messages`, { embeds: [buildDiscordEmbed(e)] })
+        if (!r.ok) return json({ error: `Discord error ${r.status}: ${r.data?.message || JSON.stringify(r.data)}` }, 502)
+        return json({ success: true, messageId: r.data?.id })
+      }
+      if (route.startsWith('/admin/dashboard/embeds/') && method === 'DELETE') {
+        await db.collection('embeds').deleteOne({ id: path[3] })
+        return json({ success: true })
+      }
+
+      // ----- Discord bot: register slash commands + live status -----
+      if (route === '/admin/dashboard/register-commands' && method === 'POST') {
+        const cfg = await getBotCfg(db)
+        const token = cfg.discordBotToken, appId = cfg.discordClientId, guildId = cfg.discordGuildId
+        if (!token || !appId || !guildId) return json({ error: 'Save your bot token, Client (Application) ID and Guild (Server) ID first.' }, 400)
+        const commands = [
+          { name: 'claim', description: 'Claim your paid order (toy code or account login)', type: 1, options: [{ type: 3, name: 'order', description: 'Your order number', required: true }] },
+          { name: 'embed', description: 'Post a saved embed to this channel', type: 1, default_member_permissions: '32', options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
+        ]
+        const r = await discordApi(token, 'PUT', `/applications/${appId}/guilds/${guildId}/commands`, commands)
+        if (!r.ok) return json({ error: `Discord error ${r.status}: ${r.data?.message || JSON.stringify(r.data)}` }, 502)
+        const names = Array.isArray(r.data) ? r.data.map(c => c.name) : []
+        await db.collection('settings').updateOne({ id: 'botConfig' }, { $set: { commandsRegisteredAt: new Date(), commandNames: names } }, { upsert: true })
+        return json({ success: true, commands: names })
+      }
+      if (route === '/admin/dashboard/bot-status' && method === 'GET') {
+        const cfg = await getBotCfg(db)
+        const token = cfg.discordBotToken
+        let tokenValid = false, botUsername = null
+        if (token) {
+          const r = await discordApi(token, 'GET', '/users/@me')
+          if (r.ok) { tokenValid = true; botUsername = r.data?.username ? `${r.data.username}${r.data.discriminator && r.data.discriminator !== '0' ? '#' + r.data.discriminator : ''}` : null }
+        }
+        let commandsRegistered = false, commands = []
+        if (token && cfg.discordClientId && cfg.discordGuildId) {
+          const rc = await discordApi(token, 'GET', `/applications/${cfg.discordClientId}/guilds/${cfg.discordGuildId}/commands`)
+          if (rc.ok && Array.isArray(rc.data)) { commands = rc.data.map(c => c.name); commandsRegistered = commands.length > 0 }
+        }
+        const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        const publicKeySet = !!process.env.DISCORD_PUBLIC_KEY
+        return json({
+          tokenValid, botUsername, publicKeySet, commandsRegistered, commands,
+          tokenSet: !!token, clientId: cfg.discordClientId || '', guildId: cfg.discordGuildId || '', channelId: cfg.discordChannelId || '',
+          endpointUrl: `${base}/api/discord/interactions`,
+          ready: tokenValid && publicKeySet && commandsRegistered
+        })
+      }
+
 
       // ----- Reviews management -----
       if (route === '/admin/reviews/settings' && method === 'POST') {

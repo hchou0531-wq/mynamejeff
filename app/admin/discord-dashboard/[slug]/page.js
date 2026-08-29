@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'next/navigation'
-import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound } from 'lucide-react'
+import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound, Sparkles, Send, RefreshCw, Pencil, X } from 'lucide-react'
 
 const api = async (path, opts = {}) => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('rbx_token') : null
@@ -29,6 +29,13 @@ export default function DiscordDashboardPage() {
   const [saving, setSaving] = useState(false)
   const [newAcc, setNewAcc] = useState({ title: '', price: '', imageUrl: '', username: '', password: '', email: '', notes: '' })
   const [newTc, setNewTc] = useState({ title: '', price: '', imageUrl: '', code: '' })
+  const [embeds, setEmbeds] = useState([])
+  const emptyEmbed = { id: null, name: '', title: '', description: '', color: '#5865F2', imageUrl: '', thumbnailUrl: '', footerText: '', authorName: '', fields: [] }
+  const [embForm, setEmbForm] = useState(emptyEmbed)
+  const [embSaving, setEmbSaving] = useState(false)
+  const [botStatus, setBotStatus] = useState(null)
+  const [statusLoading, setStatusLoading] = useState(false)
+  const [registering, setRegistering] = useState(false)
 
   useEffect(() => {
     (async () => {
@@ -39,11 +46,36 @@ export default function DiscordDashboardPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [ov, bc, ac, tc] = await Promise.all([api('/admin/dashboard/overview'), api('/admin/dashboard/bot-config'), api('/admin/dashboard/accounts'), api('/admin/dashboard/toycodes')])
-      setOverview(ov); setBotCfg(bc.config); setAccounts(ac.accounts || []); setToycodes(tc.toycodes || [])
+      const [ov, bc, ac, tc, em] = await Promise.all([api('/admin/dashboard/overview'), api('/admin/dashboard/bot-config'), api('/admin/dashboard/accounts'), api('/admin/dashboard/toycodes'), api('/admin/dashboard/embeds')])
+      setOverview(ov); setBotCfg(bc.config); setAccounts(ac.accounts || []); setToycodes(tc.toycodes || []); setEmbeds(em.embeds || [])
       setForm(f => ({ ...f, discordClientId: bc.config.discordClientId || '', discordGuildId: bc.config.discordGuildId || '', discordChannelId: bc.config.discordChannelId || '' }))
     } catch (e) { setErr(e.message) }
   }, [])
+
+  const loadBotStatus = useCallback(async () => {
+    setStatusLoading(true)
+    try { const s = await api('/admin/dashboard/bot-status'); setBotStatus(s) } catch (e) { setErr(e.message) } finally { setStatusLoading(false) }
+  }, [])
+  const registerCommands = async () => {
+    setRegistering(true); setErr('')
+    try { await api('/admin/dashboard/register-commands', { method: 'POST' }); await loadBotStatus() } catch (e) { setErr(e.message) } finally { setRegistering(false) }
+  }
+
+  // Embeds
+  const editEmbed = (e) => { setEmbForm({ id: e.id, name: e.name || '', title: e.title || '', description: e.description || '', color: e.color || '#5865F2', imageUrl: e.imageUrl || '', thumbnailUrl: e.thumbnailUrl || '', footerText: e.footerText || '', authorName: e.authorName || '', fields: Array.isArray(e.fields) ? e.fields.map(f => ({ ...f })) : [] }) }
+  const resetEmbed = () => setEmbForm(emptyEmbed)
+  const addField = () => setEmbForm(f => f.fields.length >= 5 ? f : ({ ...f, fields: [...f.fields, { name: '', value: '', inline: false }] }))
+  const updField = (i, k, v) => setEmbForm(f => ({ ...f, fields: f.fields.map((fd, idx) => idx === i ? { ...fd, [k]: v } : fd) }))
+  const rmField = (i) => setEmbForm(f => ({ ...f, fields: f.fields.filter((_, idx) => idx !== i) }))
+  const saveEmbed = async () => {
+    if (!embForm.name.trim()) { setErr('Give the embed an internal name'); return }
+    setEmbSaving(true); setErr('')
+    try { await api('/admin/dashboard/embeds', { method: 'POST', body: JSON.stringify(embForm) }); resetEmbed(); await loadAll() } catch (e) { setErr(e.message) } finally { setEmbSaving(false) }
+  }
+  const deleteEmbed = async (id) => { try { await api(`/admin/dashboard/embeds/${id}`, { method: 'DELETE' }); await loadAll() } catch (e) { setErr(e.message) } }
+  const postEmbed = async (id) => { setErr(''); try { await api(`/admin/dashboard/embeds/${id}/post`, { method: 'POST', body: JSON.stringify({}) }); setErr('') } catch (e) { setErr(e.message) } }
+
+  useEffect(() => { if (step === 'ready' && section === 'general' && !botStatus && !statusLoading) loadBotStatus() }, [step, section, botStatus, statusLoading, loadBotStatus])
 
   const verify = async () => {
     setVerifying(true); setErr('')
@@ -80,8 +112,8 @@ export default function DiscordDashboardPage() {
   )
 
   const s = overview?.stats || {}
-  const online = overview?.botOnline
-  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['general', 'General', Settings]]
+  const online = botStatus ? botStatus.ready : !!overview?.botOnline
+  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['embeds', 'Embeds', Sparkles], ['general', 'General', Settings]]
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
   return (
@@ -162,15 +194,90 @@ export default function DiscordDashboardPage() {
             </>
           )}
 
+          {section === 'embeds' && (
+            <>
+              <Panel title={embForm.id ? 'Edit embed' : 'Create embed'} icon={Sparkles}>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <Field label="Internal name (used by /embed)"><Inp v={embForm.name} set={x => setEmbForm({ ...embForm, name: x })} ph="e.g. rules" /></Field>
+                      <Field label="Color"><div className="flex items-center gap-2"><input type="color" value={/^#([0-9a-fA-F]{6})$/.test(embForm.color) ? embForm.color : '#5865F2'} onChange={e => setEmbForm({ ...embForm, color: e.target.value })} className="h-9 w-12 rounded bg-transparent border border-white/10 cursor-pointer" /><Inp v={embForm.color} set={x => setEmbForm({ ...embForm, color: x })} ph="#5865F2" /></div></Field>
+                    </div>
+                    <Field label="Title"><Inp v={embForm.title} set={x => setEmbForm({ ...embForm, title: x })} ph="Embed title" /></Field>
+                    <Field label="Description"><textarea value={embForm.description} onChange={e => setEmbForm({ ...embForm, description: e.target.value })} placeholder="Supports Discord markdown" className="inp" rows={4} /></Field>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <Field label="Author name"><Inp v={embForm.authorName} set={x => setEmbForm({ ...embForm, authorName: x })} ph="optional" /></Field>
+                      <Field label="Footer text"><Inp v={embForm.footerText} set={x => setEmbForm({ ...embForm, footerText: x })} ph="optional" /></Field>
+                      <Field label="Image URL"><Inp v={embForm.imageUrl} set={x => setEmbForm({ ...embForm, imageUrl: x })} ph="large image (optional)" /></Field>
+                      <Field label="Thumbnail URL"><Inp v={embForm.thumbnailUrl} set={x => setEmbForm({ ...embForm, thumbnailUrl: x })} ph="small image (optional)" /></Field>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1"><label className="text-[11px] text-slate-500">Fields ({embForm.fields.length}/5)</label>{embForm.fields.length < 5 && <button onClick={addField} className="text-[11px] text-violet-300 flex items-center gap-1"><Plus className="w-3 h-3" /> Add field</button>}</div>
+                      <div className="space-y-2">
+                        {embForm.fields.map((fd, i) => (
+                          <div key={i} className="p-2 rounded-lg bg-black/30 border border-white/5 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Inp v={fd.name} set={x => updField(i, 'name', x)} ph="Field name" />
+                              <button onClick={() => rmField(i)} className="text-slate-500 hover:text-red-400"><X className="w-4 h-4" /></button>
+                            </div>
+                            <Inp v={fd.value} set={x => updField(i, 'value', x)} ph="Field value" />
+                            <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer"><input type="checkbox" checked={!!fd.inline} onChange={e => updField(i, 'inline', e.target.checked)} className="accent-violet-500" /> Inline</label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <Btn onClick={saveEmbed} disabled={embSaving}>{embSaving && <Loader2 className="w-4 h-4 animate-spin mr-1 inline" />}{embForm.id ? 'Update embed' : 'Save embed'}</Btn>
+                      {embForm.id && <button onClick={resetEmbed} className="text-xs px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10">Cancel edit</button>}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-slate-500 block mb-1">Live preview</label>
+                    <EmbedPreview e={embForm} />
+                    <p className="text-[11px] text-slate-500 mt-2">In Discord, admins post this with <code className="text-slate-300">/embed name:{embForm.name || '...'}</code></p>
+                  </div>
+                </div>
+              </Panel>
+              <Panel title={`Saved embeds (${embeds.length})`} icon={Sparkles}>
+                {embeds.length === 0 ? <p className="text-sm text-slate-500 py-4 text-center">No embeds yet. Create one above.</p> : (
+                  <div className="space-y-2">
+                    {embeds.map(e => (
+                      <div key={e.id} className="flex items-center gap-3 p-3 rounded-xl bg-black/30 border border-white/5">
+                        <span className="w-1.5 h-10 rounded-full" style={{ background: /^#([0-9a-fA-F]{6})$/.test(e.color) ? e.color : '#5865F2' }} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold truncate">{e.name} <span className="text-slate-500 font-normal">· {e.title || '(no title)'}</span></p>
+                          <p className="text-[11px] text-slate-500 truncate">{e.description || '—'}</p>
+                        </div>
+                        <button onClick={() => postEmbed(e.id)} title="Post to channel now" className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1"><Send className="w-3.5 h-3.5" /> Post</button>
+                        <button onClick={() => editEmbed(e)} className="text-slate-400 hover:text-white"><Pencil className="w-4 h-4" /></button>
+                        <button onClick={() => deleteEmbed(e.id)} className="text-slate-500 hover:text-red-400"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-500 mt-3">"Post" sends the embed to your Orders Channel now. Requires a saved bot token + channel ID (General tab).</p>
+              </Panel>
+            </>
+          )}
+
           {section === 'general' && (
             <>
-              <Panel title="Bot power" icon={Power}>
-                <div className="flex items-center justify-between">
-                  <div><p className="text-sm font-semibold">Roblox trade bot — <span className="text-slate-300">voIIium</span></p><p className="text-xs text-slate-500">Turn the fulfillment bot online or offline.</p></div>
-                  <button onClick={() => setBot({ botOnline: !online })} className={`px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 ${online ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-slate-500/20 text-slate-300 border border-white/10'}`}><Power className="w-4 h-4" /> {online ? 'Online' : 'Offline'}</button>
+              <Panel title="Bot status" icon={Bot}>
+                <div className="flex items-center justify-between mb-3">
+                  <div><p className="text-sm font-semibold">Discord bot {botStatus?.botUsername ? <span className="text-slate-300">— {botStatus.botUsername}</span> : ''}</p><p className="text-xs text-slate-500">Slash commands run over the HTTP interactions endpoint (no always-on "online" dot needed).</p></div>
+                  <span className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-bold ${botStatus?.ready ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}><Power className="w-4 h-4" /> {statusLoading ? 'Checking…' : botStatus?.ready ? 'Ready' : 'Not ready'}</span>
+                </div>
+                <div className="grid gap-2">
+                  <SecretRow label="Bot token valid" ok={botStatus?.tokenValid} note={botStatus?.tokenValid ? botStatus?.botUsername : 'Save/replace token below'} />
+                  <SecretRow label="Public key configured (DISCORD_PUBLIC_KEY)" ok={botStatus?.publicKeySet} note="Verifies incoming slash commands" />
+                  <SecretRow label="Slash commands registered" ok={botStatus?.commandsRegistered} note={botStatus?.commands?.length ? botStatus.commands.map(c => '/' + c).join('  ') : 'Click Register'} />
+                </div>
+                <div className="flex items-center gap-2 mt-4">
+                  <Btn onClick={registerCommands} disabled={registering}>{registering && <Loader2 className="w-4 h-4 animate-spin mr-1 inline" />}Register slash commands</Btn>
+                  <button onClick={loadBotStatus} disabled={statusLoading} className="text-xs px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-1"><RefreshCw className={`w-3.5 h-3.5 ${statusLoading ? 'animate-spin' : ''}`} /> Refresh</button>
                 </div>
                 <label className="flex items-center gap-2 mt-4 text-sm cursor-pointer select-none">
-                  <input type="checkbox" checked={!!botCfg?.robloxEnabled} onChange={e => setBot({ robloxEnabled: e.target.checked })} className="w-4 h-4 accent-violet-500" /> Enable Roblox trade automation
+                  <input type="checkbox" checked={!!botCfg?.robloxEnabled} onChange={e => setBot({ robloxEnabled: e.target.checked })} className="w-4 h-4 accent-violet-500" /> Enable Roblox trade automation (voIIium)
                 </label>
               </Panel>
 
@@ -185,15 +292,15 @@ export default function DiscordDashboardPage() {
                 <div className="flex justify-end mt-3"><Btn onClick={saveBot} disabled={saving}>{saving && <Loader2 className="w-4 h-4 animate-spin mr-1 inline" />}Save keys</Btn></div>
 
                 <div className="mt-5 grid gap-2">
-                  <SecretRow label="Discord Public Key (env DISCORD_PUBLIC_KEY)" ok={botCfg?.discordPublicKeySet} note="Needed to verify /claim slash-command requests." />
+                  <SecretRow label="Discord Public Key (env DISCORD_PUBLIC_KEY)" ok={botCfg?.discordPublicKeySet} note="Needed to verify slash-command requests." />
                   <SecretRow label="Bot shared secret (env BOT_SHARED_SECRET)" ok={botCfg?.botSharedSecretSet} note="Bot uses this to call the claim API." />
                   <SecretRow label="Dashboard secret link (env ADMIN_DASHBOARD_SECRET)" ok={botCfg?.dashboardSecretSet} />
                 </div>
                 <div className="mt-4 p-3 rounded-lg bg-black/30 border border-white/5">
-                  <p className="text-[11px] text-slate-400 mb-1">Discord Interactions Endpoint URL (paste into the Discord Developer Portal):</p>
+                  <p className="text-[11px] text-slate-400 mb-1">Discord Interactions Endpoint URL (paste into the Discord Developer Portal → General Information):</p>
                   <div className="flex items-center gap-2"><code className="text-xs text-slate-200 break-all flex-1">{origin}/api/discord/interactions</code><button onClick={() => copy(`${origin}/api/discord/interactions`)} className="text-slate-400 hover:text-white"><Copy className="w-4 h-4" /></button></div>
                 </div>
-                <p className="text-[11px] text-amber-300 mt-3 flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> Buyers claim by typing <code className="mx-1">/claim &lt;order number&gt;</code> in the orders channel. Assign a Profile/Toy Code to their order number first (in those tabs).</p>
+                <p className="text-[11px] text-amber-300 mt-3 flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> Admins post embeds with <code className="mx-1">/embed name:&lt;name&gt;</code>. Buyers claim with <code className="mx-1">/claim &lt;order number&gt;</code> (assign a Profile/Toy Code to their order first).</p>
               </Panel>
             </>
           )}
@@ -212,6 +319,27 @@ function Stat({ icon: Icon, label, value, color }) {
 function Panel({ title, icon: Icon, children }) { return <section className="bg-[#12101f]/60 border border-white/5 rounded-2xl p-5"><h2 className="font-black mb-4 flex items-center gap-2">{Icon && <Icon className="w-5 h-5 text-violet-400" />} {title}</h2>{children}</section> }
 function Field({ label, children }) { return <div><label className="text-[11px] text-slate-500 block mb-1">{label}</label>{children}</div> }
 function Inp({ v, set, ph, type = 'text' }) { return <input type={type} value={v} onChange={e => set(e.target.value)} placeholder={ph} className="inp" /> }
+function EmbedPreview({ e }) {
+  const color = /^#([0-9a-fA-F]{6})$/.test(e.color) ? e.color : '#5865F2'
+  const fields = (e.fields || []).filter(f => f && (f.name || f.value))
+  const empty = !e.title && !e.description && fields.length === 0 && !e.imageUrl && !e.authorName
+  return (
+    <div className="rounded-md bg-[#2b2d31] p-3 max-w-md overflow-hidden" style={{ borderLeft: `4px solid ${color}` }}>
+      {e.authorName && <p className="text-xs font-semibold text-slate-200 mb-1">{e.authorName}</p>}
+      {e.title && <p className="text-sm font-bold text-[#00a8fc] break-words">{e.title}</p>}
+      {e.description && <p className="text-[13px] text-slate-300 whitespace-pre-wrap mt-1 break-words">{e.description}</p>}
+      {fields.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 mt-2">
+          {fields.map((f, i) => (<div key={i}><p className="text-xs font-semibold text-slate-200 break-words">{f.name || '\u200b'}</p><p className="text-[13px] text-slate-400 whitespace-pre-wrap break-words">{f.value || '\u200b'}</p></div>))}
+        </div>
+      )}
+      {e.thumbnailUrl && <img src={e.thumbnailUrl} alt="" className="mt-2 rounded w-16 h-16 object-cover float-right" />}
+      {e.imageUrl && <img src={e.imageUrl} alt="" className="mt-2 rounded max-h-40 object-cover w-full" />}
+      {e.footerText && <p className="text-[11px] text-slate-500 mt-2 break-words">{e.footerText}</p>}
+      {empty && <p className="text-[13px] text-slate-500">Nothing to preview yet.</p>}
+    </div>
+  )
+}
 function Btn({ children, onClick, disabled }) { return <button onClick={onClick} disabled={disabled} className="px-4 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-600 font-bold text-white text-sm disabled:opacity-50">{children}</button> }
 function SecretRow({ label, ok, note }) { return <div className="flex items-center gap-2 text-sm"><span className={`w-2 h-2 rounded-full ${ok ? 'bg-emerald-400' : 'bg-slate-600'}`} /><span className="text-slate-300">{label}</span><span className={`text-xs ${ok ? 'text-emerald-400' : 'text-slate-500'}`}>{ok ? 'set' : 'not set'}</span>{note && <span className="text-[11px] text-slate-500 ml-auto hidden sm:block">{note}</span>}</div> }
 function StatusPill({ status }) {

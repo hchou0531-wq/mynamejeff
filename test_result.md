@@ -908,3 +908,57 @@ agent_communication:
     -message: "Please verify the Discord Dashboard ACCESS FLOW end-to-end in-browser (user reported a '404 not found'). NOTE: dev hydration is slow (~12-16s) - wait generously. Admin: admin@robloot.com / roblootdevtomo. The secret slug is 092bc33051742211d105ca27de92fccc017c75d7d7262d66f10a92926b285342. STEPS: (1) Go to the app root, click Login, sign in as the admin. (2) Navigate to the Admin Console (dashboard view / account menu). Find the 'Discord Dashboard' card - CONFIRM it shows a one-time 6-digit code and a secret link + 'Open Discord Dashboard' button. (3) Read the 6-digit code from that card. (4) In the SAME browser (so the admin rbx_token persists in localStorage), navigate to /admin/discord-dashboard/092bc33051742211d105ca27de92fccc017c75d7d7262d66f10a92926b285342 . EXPECT: NOT a 404 - it should show 'Two-factor verification' with a 6-digit input. (5) Enter the code from step 3 and click 'Unlock dashboard'. EXPECT: the dashboard loads (sidebar with Overview/Orders/Profiles/Toy Codes/General, stat cards). (6) NEGATIVE CONTROL: open a fresh context with NO login (clear localStorage) and visit the same URL -> EXPECT the stealth '404 — Not found' screen (this is by design, confirm it). Report whether each step passed and any console errors."
     -agent: "testing"
     -message: "✅ DISCORD DASHBOARD ACCESS FLOW TESTING COMPLETE - ALL 5 STEPS PASSED. Comprehensive end-to-end testing verified the complete legitimate admin flow works perfectly. The user's reported '404 not found' is NOT a bug - it's the intentional stealth screen shown when the browser isn't logged in as admin. All security measures working correctly: (1) Admin login successful with rbx_token stored ✓ (2) Discord Dashboard card in Admin Console displays 6-digit code, secret link, and Open button ✓ (3) CRITICAL: Logged-in admin accessing secret URL sees Two-factor verification screen (NOT 404) ✓ (4) Code entry unlocks full dashboard with all sections and stat cards ✓ (5) NEGATIVE CONTROL: Non-authenticated user correctly sees 404 stealth screen ✓ No critical issues found. Feature is production-ready and working as designed."
+
+
+## ===== UPDATE 16: Discord bot "won't turn on" fix + Embeds feature =====
+backend_v16:
+  - task: "Discord Embeds CRUD + /embed slash command + autocomplete"
+    file: "app/api/[[...path]]/route.js, app/admin/discord-dashboard/[slug]/page.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "NEW. Admin-only endpoints: GET/POST /api/admin/dashboard/embeds (create/upsert-by-name or edit-by-id; requires name + (title OR description); up to 5 fields). DELETE /api/admin/dashboard/embeds/:id. POST /api/admin/dashboard/embeds/:id/post -> sends the embed to the Discord channel via bot token (real Discord REST). Interactions webhook now handles /embed (type 2 -> returns data.embeds public) and autocomplete (type 4 -> type 8 choices from saved embed names). Main-agent already VERIFIED the signature-gated interaction path via a controlled temp-key test: PING->{type:1}, /embed rules -> returns embed (title 'Server Rules'), /embed unknown -> ephemeral error (flags 64), autocomplete -> choices [rules], bad signature -> 401. Real DISCORD_PUBLIC_KEY restored after."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All EMBEDS CRUD operations working correctly. Create embed with valid data returns HTTP 200 with embed object (id, name='welcome', title='Hi'). POST without name returns 400 'Embed name is required'. POST with name but no title AND no description returns 400 'Add a title or a description'. GET /api/admin/dashboard/embeds returns array including created embeds. UPSERT-BY-NAME: Re-POST with same name 'welcome' edits existing (count unchanged, title updated to 'Edited'). EDIT-BY-ID: POST with id updates title to 'ById'. DELETE: Embed successfully deleted and not in GET. All validation and upsert logic working correctly."
+  - task: "Register slash commands + live bot status (replaces cosmetic online toggle)"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "ROOT CAUSE of 'bot won't turn on': DISCORD_PUBLIC_KEY was unset (interactions returned 503) and slash commands were never registered. Fix: DISCORD_PUBLIC_KEY now set in env; POST /api/admin/dashboard/register-commands does a real PUT of guild commands [claim, embed] (embed restricted via default_member_permissions='32'). GET /api/admin/dashboard/bot-status calls Discord (GET /users/@me + guild commands) and returns {tokenValid, botUsername, publicKeySet, commandsRegistered, commands[], ready}. Main-agent verified via curl: bot token valid (bot='Ethereal#4833'), register returned commands ['claim','embed'], bot-status ready=true. The old cosmetic Online/Offline toggle was removed; General tab now shows real status rows + Register + Refresh."
+
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All bot-status and register-commands endpoints working correctly. GET /api/admin/dashboard/bot-status returns HTTP 200 with all required keys: tokenValid=true, botUsername='Ethereal#4833', publicKeySet=true, commandsRegistered=true, commands=['claim','embed'], ready=true. POST /api/admin/dashboard/register-commands returns HTTP 200 with success=true, commands=['claim','embed'] (idempotent real Discord PUT). POST /api/admin/dashboard/embeds/:id/post successfully posts embed to Discord channel (returns success=true, messageId). POST with nonexistent id returns 404. POST /api/discord/interactions with no signature returns 401 (proves DISCORD_PUBLIC_KEY is configured). All guards working: non-admin users and no-auth requests correctly return 403 for all admin endpoints."
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 16
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+  run_ui: false
+
+agent_communication:
+    -agent: "main"
+    -message: "UPDATE 16 backend test. Admin: admin@robloot.com/roblootdevtomo. Discord bot token+IDs are saved in DB (bot='Ethereal'), DISCORD_PUBLIC_KEY now set. NOTE: the signed /discord/interactions command path (/embed response + autocomplete + bad-sig 401) was ALREADY verified by main agent with a controlled temporary keypair - you do NOT need to test the signed interaction path (you can't forge Discord's signature anyway; just confirm POST /api/discord/interactions with no/invalid signature returns 401, not 503). PLEASE TEST: (1) EMBEDS CRUD (admin): POST /api/admin/dashboard/embeds {name:'welcome', title:'Hi', description:'desc', color:'#22c55e', fields:[{name:'a',value:'b',inline:true}]} -> 200 returns embed with id. POST without name -> 400. POST with name but no title AND no description -> 400. GET /api/admin/dashboard/embeds -> array includes it. Re-POST {name:'welcome', title:'Edited'} (same name) -> should UPSERT (edit existing, not duplicate) - verify GET count didn't grow for 'welcome' and title changed. POST {id:<existing id>, name:'welcome', title:'ById'} -> edits by id. DELETE /api/admin/dashboard/embeds/:id -> 200 and gone from GET. (2) GUARDS: all /api/admin/dashboard/embeds* and register-commands and bot-status must return 403 for a normal (non-admin) user token and with no auth. (3) BOT STATUS: GET /api/admin/dashboard/bot-status as admin -> 200 with keys {tokenValid:true, botUsername (string), publicKeySet:true, commandsRegistered:true, commands (array incl 'embed' and 'claim'), ready:true}. (4) REGISTER: POST /api/admin/dashboard/register-commands as admin -> 200 {success:true, commands:['claim','embed']} (idempotent, real Discord PUT). (5) POST-TO-CHANNEL: POST /api/admin/dashboard/embeds/:id/post for a real saved embed -> 200 {success:true, messageId} (THIS POSTS ONE REAL EMBED to the configured Discord channel - that is expected/acceptable, just do it once). POST /post for a NON-existent embed id -> 404. (6) INTERACTIONS: POST /api/discord/interactions with body {type:1} and NO signature headers -> 401 (proves key is configured; previously 503). (7) REGRESSION: GET /api/config -> {cryptoConfigured:true, provider:'blockbee'}; admin login still returns isAdmin:true. Do NOT modify code."
+
+agent_communication:
+    -agent: "testing"
+    -message: "✅ UPDATE 16 BACKEND TESTING COMPLETE - ALL TESTS PASSED (25/25). Comprehensive testing completed for Discord Embeds + bot-status endpoints: (1) EMBEDS CRUD: All operations working correctly - Create embed with valid data returns HTTP 200 with embed object (id, name, title), POST without name returns 400, POST with name but no title AND no description returns 400, GET /api/admin/dashboard/embeds returns array including created embeds, UPSERT-BY-NAME working (re-POST with same name edits existing, count unchanged, title updated), EDIT-BY-ID working (POST with id updates embed), DELETE working (embed removed and not in GET) ✓ (2) GUARDS: All admin endpoints correctly return 403 for non-admin users AND for requests with no auth header - GET/POST /api/admin/dashboard/embeds, GET /api/admin/dashboard/bot-status, POST /api/admin/dashboard/register-commands all protected ✓ (3) BOT STATUS: GET /api/admin/dashboard/bot-status returns HTTP 200 with all required keys - tokenValid=true, botUsername='Ethereal#4833', publicKeySet=true, commandsRegistered=true, commands=['claim','embed'], ready=true ✓ (4) REGISTER COMMANDS: POST /api/admin/dashboard/register-commands returns HTTP 200 with success=true, commands=['claim','embed'] (idempotent real Discord PUT) ✓ (5) POST-TO-CHANNEL: POST /api/admin/dashboard/embeds/:id/post returns HTTP 200 with success=true, messageId (real Discord message posted to channel), POST with nonexistent id returns 404 ✓ (6) INTERACTIONS KEY CHECK: POST /api/discord/interactions with no signature headers returns HTTP 401 (NOT 503), proving DISCORD_PUBLIC_KEY is configured ✓ (7) REGRESSION: GET /api/config returns cryptoConfigured=true, provider='blockbee'; admin login returns isAdmin=true ✓. No critical issues found. All Discord Embeds and bot-status endpoints are production-ready."
+
