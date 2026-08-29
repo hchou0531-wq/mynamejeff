@@ -35,6 +35,15 @@ async function getUser(request, db) {
 async function notify(db, userId, text, type = 'info') {
   await db.collection('notifications').insertOne({ id: uuidv4(), userId, text, type, read: false, createdAt: new Date() })
 }
+async function nextTxNumber(db) {
+  const r = await db.collection('counters').findOneAndUpdate(
+    { id: 'transactions' },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: 'after' }
+  )
+  const doc = (r && r.value) ? r.value : r
+  return (doc && typeof doc.seq === 'number') ? doc.seq : 1
+}
 async function fulfillListing(db, listingId) {
   const l = await db.collection('listings').findOne({ id: listingId })
   if (!l) return
@@ -511,9 +520,15 @@ async function handleRoute(request, { params }) {
       if (!listing) return json({ error: 'Listing not found' }, 404)
       if (listing.status !== 'active') return json({ error: 'This listing is no longer available' }, 400)
 
+      const discordName = (b.discordName || '').toString().trim()
+      const discordTag = (b.discordTag || '').toString().trim()
+      const robloxUsername = (b.robloxUsername || '').toString().trim()
+      if (!discordName || !robloxUsername) return json({ error: 'Please provide your Discord username and Roblox username before paying.' }, 400)
+
       const order = {
-        id: uuidv4(), orderId: `ord_${uuidv4()}`, listingId: listing.id, item: listing.item,
+        id: uuidv4(), orderId: `ord_${uuidv4()}`, txNumber: await nextTxNumber(db), listingId: listing.id, item: listing.item,
         buyerId: user.id, buyerName: user.username, sellerName: listing.sellerName,
+        buyerInfo: { discordName, discordTag, robloxUsername },
         amountUsd: listing.price, currency: 'USD',
         provider: 'blockbee', status: 'pending_payment', checkoutUrl: null,
         nonce: uuidv4(), blockbeePaymentId: null, createdAt: new Date(), paidAt: null
@@ -538,6 +553,17 @@ async function handleRoute(request, { params }) {
       if (!user) return json({ error: 'Unauthorized' }, 401)
       const purchases = await db.collection('orders').find({ buyerId: user.id }).sort({ createdAt: -1 }).toArray()
       return json({ purchases: purchases.map(clean) })
+    }
+
+    // Admin-only transaction detail by sequential number (e.g. /transaction/1)
+    if (route.startsWith('/transaction/') && method === 'GET') {
+      const user = await getUser(request, db)
+      if (!user || !user.isAdmin) return json({ error: 'Forbidden' }, 403)
+      const num = parseInt(path[1], 10)
+      if (!num) return json({ error: 'Not found' }, 404)
+      const order = await db.collection('orders').findOne({ txNumber: num })
+      if (!order) return json({ error: 'Not found' }, 404)
+      return json({ transaction: clean(order) })
     }
 
     // ---------- PAYMENTS ----------

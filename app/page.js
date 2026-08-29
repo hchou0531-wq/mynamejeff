@@ -139,7 +139,6 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1 ml-2">
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse')}>Browse</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse', { category: 'Limiteds' })}>Limiteds</Button>
-            <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('sellers')}>Sellers</Button>
             {user?.isAdmin && <Button variant="ghost" className="text-fuchsia-300 hover:text-fuchsia-200" onClick={() => go('admin')}>Admin</Button>}
           </nav>
           <div className="flex-1" />
@@ -170,7 +169,6 @@ export default function App() {
         {view.name === 'item' && <ItemView api={api} go={go} listingId={view.listingId} user={user} requireAuth={requireAuth} cfg={cfg} />}
         {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} cfg={cfg} />}
         {view.name === 'seller' && <SellerView api={api} go={go} name={view.username} />}
-        {view.name === 'sellers' && <SellersView api={api} go={go} />}
         {view.name === 'dashboard' && (user ? <DashboardView api={api} go={go} user={user} /> : <EmptyAuth onLogin={() => { setAuthMode('login'); setAuthOpen(true) }} />)}
         {view.name === 'admin' && <AdminView api={api} user={user} go={go} cfg={cfg} />}
       </main>
@@ -466,14 +464,16 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
   const [related, setRelated] = useState([])
+  const [info, setInfo] = useState({ discordName: '', discordTag: '', robloxUsername: '' })
   useEffect(() => {
     api(`/listings/${listingId}`).then(d => { setData(d); api(`/listings?category=${encodeURIComponent(d.listing.item.category)}`).then(r => setRelated((r.listings || []).filter(x => x.id !== listingId).slice(0, 4))) }).catch(e => toast.error(e.message))
   }, [api, listingId])
 
   const buy = async () => {
+    if (!info.discordName.trim() || !info.robloxUsername.trim()) { toast.error('Please fill in your Discord and Roblox username.'); return }
     setBuying(true)
     try {
-      const d = await api('/orders', { method: 'POST', body: JSON.stringify({ listingId }) })
+      const d = await api('/orders', { method: 'POST', body: JSON.stringify({ listingId, discordName: info.discordName.trim(), discordTag: info.discordTag.trim(), robloxUsername: info.robloxUsername.trim() }) })
       if (d.checkoutUrl) { toast.success('Redirecting to secure crypto checkout...'); window.location.assign(d.checkoutUrl) }
       else { setConfirmOpen(false); go('order', { orderId: d.orderId }) } // demo mode (no token yet)
     } catch (e) { toast.error(e.message) } finally { setBuying(false) }
@@ -534,11 +534,27 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
-          <DialogHeader><DialogTitle className="flex items-center gap-2"><Bitcoin className="w-5 h-5 text-amber-400" /> Checkout with Crypto</DialogTitle><DialogDescription className="text-slate-400">You'll be redirected to CoinGate's secure hosted checkout to pay.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Bitcoin className="w-5 h-5 text-amber-400" /> Checkout with Crypto</DialogTitle><DialogDescription className="text-slate-400">Enter your details so we can deliver your item, then you'll be redirected to the secure crypto checkout.</DialogDescription></DialogHeader>
           <div className="flex items-center gap-3 p-3 rounded-lg bg-black/30">
             <img src={listing.item.imageUrl} className="w-16 h-16 rounded-lg object-cover" alt="" />
             <div className="flex-1"><p className="font-bold">{listing.item.name}</p><p className="text-xs text-slate-400">from {listing.sellerName}</p></div>
             <PriceTag price={listing.price} />
+          </div>
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <Label className="text-xs text-slate-400">Discord username</Label>
+                <Input value={info.discordName} onChange={e => setInfo({ ...info, discordName: e.target.value })} placeholder="yourname" className="bg-black/30 border-white/10 mt-1" />
+              </div>
+              <div>
+                <Label className="text-xs text-slate-400"># (optional)</Label>
+                <Input value={info.discordTag} onChange={e => setInfo({ ...info, discordTag: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="0000" className="bg-black/30 border-white/10 mt-1" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs text-slate-400">Roblox username</Label>
+              <Input value={info.robloxUsername} onChange={e => setInfo({ ...info, robloxUsername: e.target.value })} placeholder="RobloxUser123" className="bg-black/30 border-white/10 mt-1" />
+            </div>
           </div>
           {!cfg?.cryptoConfigured && <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">Demo mode: live crypto isn't configured yet, so this will simulate a confirmed payment.</p>}
           <DialogFooter>
@@ -951,12 +967,17 @@ function AdminView({ api, user, go, cfg }) {
         <TabsContent value="orders" className="mt-4 space-y-2">
           {orders.length === 0 && <Empty text="No transactions yet." />}
           {orders.map(o => (
-            <Card key={o.id} className="p-3 bg-[#12101f]/60 border-white/5 flex items-center gap-3">
-              <img src={o.item.imageUrl} className="w-9 h-9 rounded object-cover" alt="" />
-              <div className="flex-1"><p className="font-semibold text-sm">{o.item.name}</p><p className="text-xs text-slate-400">{o.buyerName} · {new Date(o.createdAt).toLocaleString()} · {o.currency}</p></div>
-              <Badge className={o.status === 'paid' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}>{o.status === 'pending_payment' ? 'pending' : o.status}</Badge>
-              <PriceTag price={o.amountUsd} />
-            </Card>
+            <a key={o.id} href={o.txNumber ? `/transaction/${o.txNumber}` : undefined} target="_blank" rel="noopener noreferrer" className="block">
+              <Card className="p-3 bg-[#12101f]/60 border-white/5 flex items-center gap-3 hover:border-violet-500/40 transition-colors cursor-pointer">
+                <img src={o.item.imageUrl} className="w-9 h-9 rounded object-cover" alt="" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm flex items-center gap-2">{o.txNumber ? <Badge className="bg-violet-500/15 text-violet-300 border-violet-500/30">#{o.txNumber}</Badge> : null} <span className="truncate">{o.item.name}</span></p>
+                  <p className="text-xs text-slate-400 truncate">{o.buyerInfo?.discordName ? `Discord: ${o.buyerInfo.discordName}${o.buyerInfo.discordTag ? '#' + o.buyerInfo.discordTag : ''} · ` : ''}{o.buyerInfo?.robloxUsername ? `Roblox: ${o.buyerInfo.robloxUsername} · ` : ''}{new Date(o.createdAt).toLocaleString()}</p>
+                </div>
+                <Badge className={o.status === 'paid' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}>{o.status === 'pending_payment' ? 'pending' : o.status}</Badge>
+                <PriceTag price={o.amountUsd} />
+              </Card>
+            </a>
           ))}
         </TabsContent>
 

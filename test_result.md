@@ -607,3 +607,54 @@ agent_communication:
     -message: "UPDATE 9: Payment system switched from CoinGate to BlockBee (live, API key configured). Please test BACKEND payment flow: (1) GET /api/config -> {cryptoConfigured:true, provider:'blockbee'}. (2) Admin login admin@robloot.com/roblootdevtomo; POST /api/admin/listings to create a listing with stock+price. (3) Signup a normal user; POST /api/orders {listingId} -> MUST return {orderId, checkoutUrl} where checkoutUrl starts with 'https://pay.blockbee.io/payment/'. This is a REAL BlockBee call. (4) GET /api/payments/status?orderId=... -> status 'pending_payment' (not paid, since no real crypto sent), and includes checkoutUrl + item + amountUsd. (5) POST /api/payments/simulate {orderId} -> MUST return 403 'Disabled while live crypto is configured' (because BlockBee is configured). (6) POST /api/payments/callback?order_id=<real>&nonce=WRONG -> 401 'Invalid nonce'; with correct order_id+nonce it returns text '*ok*' (won't mark paid since BlockBee logs show unpaid - that's expected). (7) Regression: stock decrement, listing sold-out, /api/listings filters still work. NOTE: cannot fully confirm 'paid' transition without an actual on-chain payment; verifying checkout creation + reconcile-pending + guards is the goal. Do NOT modify code."
     -agent: "testing"
     -message: "✅ UPDATE 9 BACKEND TESTING COMPLETE - ALL TESTS PASSED (10/10). Comprehensive testing completed for BlockBee payment system integration: (1) CONFIG: cryptoConfigured=true, provider='blockbee', receiveCurrency='USDT' ✓ (2) ADMIN AUTH: Login working, isAdmin=true ✓ (3) ADMIN LISTING: Created listing with stock=2, price=9.99 ✓ (4) USER SIGNUP: Normal user signup working ✓ (5) CRITICAL - ORDER CREATION: POST /api/orders returns REAL BlockBee checkout URL 'https://pay.blockbee.io/payment/ltGA2tLpaW7lJS5kP9dF1xylIQi7JWNB/' (not simulated, real BlockBee API integration confirmed) ✓ (6) PAYMENT STATUS: Returns pending_payment with all required fields (item, amountUsd=9.99, checkoutUrl) ✓ (7) SIMULATE BLOCKED: Correctly returns 403 'Disabled while live crypto is configured' ✓ (8) WEBHOOK NONCE: Wrong nonce returns 401 'Invalid nonce' ✓ (9) ADMIN GUARD: Non-admin gets 403 ✓ (10) FILTERS REGRESSION: sort, category, maxPrice all working ✓. No critical issues found. BlockBee payment integration is production-ready. NOTE: The 'paid' transition cannot be verified without actual on-chain crypto payment, but all integration points are working correctly."
+
+## ===== UPDATE 10: buyer info at checkout + sequential transactions + admin-only /transaction/:num =====
+backend_v10:
+  - task: "Order requires buyer info (Discord + Roblox) & sequential txNumber"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Verified manually via curl: POST /api/orders WITHOUT discordName/robloxUsername -> 400. WITH info -> creates order, stores buyerInfo {discordName,discordTag,robloxUsername}, assigns sequential txNumber via atomic counters collection (first real order got txNumber=1), returns BlockBee checkoutUrl. Older pre-feature orders have txNumber=null (expected)."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Comprehensive testing completed. NEGATIVE TEST: POST /orders without buyer info returns HTTP 400 with error 'Please provide your Discord username and Roblox username before paying.' ✓ POSITIVE TEST: POST /orders with buyerInfo (discordName='cooldude', discordTag='1234', robloxUsername='BuilderPro') returns orderId + real BlockBee checkoutUrl starting with 'https://pay.blockbee.io/payment/' ✓ GET /admin/orders returns order with numeric txNumber=2 (>=1) and complete buyerInfo object with all fields matching exactly ✓ All buyer info validation and sequential txNumber assignment working correctly."
+  - task: "Admin-only GET /api/transaction/:num"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Verified via curl: GET /api/transaction/1 as admin -> 200 with full transaction (item, buyerInfo, amount, provider, checkoutUrl). Non-admin -> 403. No auth -> 403. Nonexistent number -> 404."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All access control and response validation tests passed. GET /transaction/2 as admin returns HTTP 200 with full transaction object including txNumber=2, buyerInfo (discordName, discordTag, robloxUsername all correct), item, amountUsd=7.5, orderId matching ✓ GET /transaction/2 as non-admin user returns HTTP 403 (Forbidden) ✓ GET /transaction/2 without Authorization header returns HTTP 403 (Forbidden) ✓ GET /transaction/9999999 as admin returns HTTP 404 (Not found) ✓ Admin-only access control working perfectly."
+
+frontend_v10:
+  - task: "Remove Sellers nav tab"
+    file: "app/page.js"
+    working: true
+    comment: "Removed 'Sellers' nav button and the 'sellers' SPA route render. Individual seller/store page (go('seller')) left intact."
+  - task: "Checkout collects Discord + Roblox before pay"
+    file: "app/page.js"
+    working: true
+    comment: "Checkout dialog now has Discord username, # (optional), Roblox username fields. Continue to Payment validates discord+roblox filled, sends them to POST /api/orders, then redirects to BlockBee checkout."
+  - task: "Admin Transactions rows link to /transaction/:num; new admin-only page"
+    file: "app/page.js, app/transaction/[num]/page.js"
+    working: true
+    comment: "Admin Transactions tab shows #txNumber badge + buyer Discord/Roblox info; each row is a link opening /transaction/<num> in a new tab. New route app/transaction/[num]/page.js: reads rbx_token, calls GET /api/transaction/:num; renders full detail for admins, otherwise shows 'page 505' (verified via screenshot: no-token visitor sees 'page 505')."
+
+agent_communication:
+    -agent: "main"
+    -message: "UPDATE 10 backend re-test. Admin: admin@robloot.com/roblootdevtomo. (1) Admin POST /api/admin/listings {name,imageUrl,category,stock,price,condition} -> get listing id. (2) Signup normal user. (3) POST /api/orders {listingId} WITHOUT discordName/robloxUsername -> expect 400. (4) POST /api/orders {listingId, discordName:'cooldude', discordTag:'1234', robloxUsername:'BuilderPro'} -> expect {orderId, checkoutUrl starts with https://pay.blockbee.io/payment/}. (5) GET /api/admin/orders as admin -> the new order has a numeric txNumber and buyerInfo{discordName,discordTag,robloxUsername}. Note the txNumber value N. (6) GET /api/transaction/N as ADMIN -> 200 with transaction incl buyerInfo. (7) GET /api/transaction/N as a NON-admin user token -> 403. (8) GET /api/transaction/N with NO auth -> 403. (9) GET /api/transaction/9999999 as admin -> 404. (10) Regression: /api/config still {cryptoConfigured:true, provider:'blockbee'}; /api/payments/simulate -> 403; listings filters still work. Do NOT modify code. NOTE: paid transition needs real on-chain payment (skip)."
+    -agent: "testing"
+    -message: "✅ UPDATE 10 BACKEND TESTING COMPLETE - ALL TESTS PASSED (11/11). Comprehensive testing completed for buyer info collection + sequential transactions + admin-only transaction endpoint: (1) ADMIN LOGIN: Working correctly, isAdmin=true ✓ (2) ADMIN CREATE LISTING: Successfully created listing with stock=5, price=7.50 ✓ (3) BUYER SIGNUP: Normal user signup working ✓ (4) NEGATIVE TEST: POST /orders WITHOUT buyer info correctly returns HTTP 400 with error 'Please provide your Discord username and Roblox username before paying.' ✓ (5) POSITIVE TEST: POST /orders WITH buyer info (discordName, discordTag, robloxUsername) returns orderId + real BlockBee checkoutUrl starting with 'https://pay.blockbee.io/payment/' ✓ (6) ADMIN ORDERS: GET /admin/orders returns order with numeric txNumber=2 (>=1) and complete buyerInfo object {discordName:'cooldude', discordTag:'1234', robloxUsername:'BuilderPro'} ✓ (7) ADMIN TRANSACTION ENDPOINT: GET /transaction/2 as admin returns HTTP 200 with full transaction including txNumber=2, buyerInfo (all fields correct), item, amountUsd=7.5, orderId matching ✓ (8) NON-ADMIN ACCESS: GET /transaction/2 as non-admin user correctly returns HTTP 403 (Forbidden) ✓ (9) NO AUTH ACCESS: GET /transaction/2 without Authorization header correctly returns HTTP 403 (Forbidden) ✓ (10) NOT FOUND: GET /transaction/9999999 as admin correctly returns HTTP 404 (Not found) ✓ (11) REGRESSION: GET /config returns cryptoConfigured=true, provider='blockbee' ✓ POST /payments/simulate returns 403 (disabled) ✓ GET /listings filters (sort=price_asc, category=Limiteds) all working ✓. No critical issues found. UPDATE 10 backend is production-ready."
