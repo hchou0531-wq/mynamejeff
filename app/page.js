@@ -14,7 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
-  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins
+  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
+  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
@@ -458,6 +459,21 @@ function BrowseView({ api, go, initialCategory, initialSearch }) {
 }
 
 
+function StatusRow({ ok, title, desc, children }) {
+  const good = ok === true
+  const Icon = good ? CheckCircle2 : AlertTriangle
+  return (
+    <div className={`flex items-start gap-3 p-3 rounded-lg border ${good ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-amber-500/10 border-amber-500/20'}`}>
+      <Icon className={`w-5 h-5 mt-0.5 shrink-0 ${good ? 'text-emerald-400' : 'text-amber-400'}`} />
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-semibold ${good ? 'text-emerald-300' : 'text-amber-300'}`}>{title}</p>
+        {desc && <p className="text-xs text-slate-400 mt-0.5">{desc}</p>}
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
   const [data, setData] = useState(null)
   const [buying, setBuying] = useState(false)
@@ -465,15 +481,48 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
   const [reportOpen, setReportOpen] = useState(false)
   const [related, setRelated] = useState([])
   const [info, setInfo] = useState({ discordName: '', discordTag: '', robloxUsername: '' })
+  // Checkout wizard: 'form' -> 'confirm' -> 'checks'
+  const [step, setStep] = useState('form')
+  const [rbxProfile, setRbxProfile] = useState(null)
+  const [verifying, setVerifying] = useState(false)
+  const [elig, setElig] = useState(null)
+  const [checking, setChecking] = useState(false)
+  const [giveItems, setGiveItems] = useState([]) // assetIds the buyer picks to give
   useEffect(() => {
     api(`/listings/${listingId}`).then(d => { setData(d); api(`/listings?category=${encodeURIComponent(d.listing.item.category)}`).then(r => setRelated((r.listings || []).filter(x => x.id !== listingId).slice(0, 4))) }).catch(e => toast.error(e.message))
   }, [api, listingId])
+
+  const resetCheckout = () => { setStep('form'); setRbxProfile(null); setElig(null); setGiveItems([]); setVerifying(false); setChecking(false) }
+  const openCheckout = () => { resetCheckout(); setConfirmOpen(true) }
+
+  // Step 1 -> 2: look up the Roblox account so the buyer can confirm it's theirs
+  const verifyAccount = async () => {
+    if (!info.discordName.trim() || !info.robloxUsername.trim()) { toast.error('Please fill in your Discord and Roblox username.'); return }
+    setVerifying(true)
+    try {
+      const d = await api(`/profile/lookup?input=${encodeURIComponent(info.robloxUsername.trim())}`)
+      setRbxProfile(d.profile)
+      setStep('confirm')
+    } catch (e) { toast.error('Could not find that Roblox account. Check the username.') } finally { setVerifying(false) }
+  }
+
+  // Step 2 -> 3: buyer confirmed the account, now run eligibility checks
+  const confirmAccount = async () => {
+    if (!rbxProfile) return
+    setStep('checks'); setChecking(true); setElig(null)
+    try {
+      const d = await api(`/checkout/eligibility?userId=${rbxProfile.id}`)
+      setElig(d.eligibility)
+    } catch (e) { toast.error(e.message || 'Eligibility check failed') } finally { setChecking(false) }
+  }
+  const toggleGive = (assetId) => setGiveItems(prev => prev.includes(assetId) ? prev.filter(x => x !== assetId) : [...prev, assetId])
 
   const buy = async () => {
     if (!info.discordName.trim() || !info.robloxUsername.trim()) { toast.error('Please fill in your Discord and Roblox username.'); return }
     setBuying(true)
     try {
-      const d = await api('/orders', { method: 'POST', body: JSON.stringify({ listingId, discordName: info.discordName.trim(), discordTag: info.discordTag.trim(), robloxUsername: info.robloxUsername.trim() }) })
+      const chosen = (elig?.limiteds || []).filter(l => giveItems.includes(l.assetId)).map(l => ({ assetId: l.assetId, name: l.name, rap: l.rap }))
+      const d = await api('/orders', { method: 'POST', body: JSON.stringify({ listingId, discordName: info.discordName.trim(), discordTag: info.discordTag.trim(), robloxUsername: info.robloxUsername.trim(), robloxUserId: rbxProfile?.id || null, giveItems: chosen }) })
       if (d.checkoutUrl) { toast.success('Redirecting to secure crypto checkout...'); window.location.assign(d.checkoutUrl) }
       else { setConfirmOpen(false); go('order', { orderId: d.orderId }) } // demo mode (no token yet)
     } catch (e) { toast.error(e.message) } finally { setBuying(false) }
@@ -517,7 +566,7 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
               <div className="text-right text-xs text-slate-500">Roblox Asset ID<br /><span className="text-slate-300 font-mono">{listing.robloxAssetId || listing.item.robloxItemId || 'N/A'}</span></div>
             </div>
             {sold ? <Button disabled className="w-full" variant="secondary">Sold out</Button>
-              : <Button onClick={() => requireAuth(() => setConfirmOpen(true))} className="w-full h-12 text-base bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 font-bold"><Bitcoin className="w-5 h-5 mr-2" /> Buy with Crypto</Button>}
+              : <Button onClick={() => requireAuth(openCheckout)} className="w-full h-12 text-base bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 font-bold"><Bitcoin className="w-5 h-5 mr-2" /> Buy with Crypto</Button>}
             <p className="text-xs text-slate-500 mt-2 text-center flex items-center justify-center gap-1"><Shield className="w-3 h-3" /> Secure crypto checkout {cfg?.receiveCurrency ? `· settles in ${cfg.receiveCurrency}` : ''}</p>
           </Card>
           <button onClick={() => go('seller', { username: listing.sellerName })} className="w-full flex items-center gap-3 p-4 rounded-xl bg-[#12101f]/60 border border-white/5 hover:border-violet-500/40 transition-colors text-left">
@@ -532,35 +581,135 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
 
       {related.length > 0 && <div className="mt-16"><h2 className="text-xl font-black mb-5">More in {listing.item.category}</h2><div className="grid grid-cols-2 sm:grid-cols-4 gap-4">{related.map(l => <ItemCard key={l.id} listing={l} onOpen={() => go('item', { listingId: l.id })} />)}</div></div>}
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
-          <DialogHeader><DialogTitle className="flex items-center gap-2"><Bitcoin className="w-5 h-5 text-amber-400" /> Checkout with Crypto</DialogTitle><DialogDescription className="text-slate-400">Enter your details so we can deliver your item, then you'll be redirected to the secure crypto checkout.</DialogDescription></DialogHeader>
+      <Dialog open={confirmOpen} onOpenChange={(o) => { setConfirmOpen(o); if (!o) resetCheckout() }}>
+        <DialogContent className="bg-[#12101f] border-white/10 text-slate-100 max-h-[88vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Bitcoin className="w-5 h-5 text-amber-400" /> Checkout with Crypto</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              {step === 'form' && "Enter your details so we can deliver your item."}
+              {step === 'confirm' && "Is this the Roblox account you'll receive the item on?"}
+              {step === 'checks' && "We ran a few quick checks on your Roblox account."}
+            </DialogDescription>
+          </DialogHeader>
           <div className="flex items-center gap-3 p-3 rounded-lg bg-black/30">
             <img src={listing.item.imageUrl} className="w-16 h-16 rounded-lg object-cover" alt="" />
             <div className="flex-1"><p className="font-bold">{listing.item.name}</p><p className="text-xs text-slate-400">from {listing.sellerName}</p></div>
             <PriceTag price={listing.price} />
           </div>
-          <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2">
-                <Label className="text-xs text-slate-400">Discord username</Label>
-                <Input value={info.discordName} onChange={e => setInfo({ ...info, discordName: e.target.value })} placeholder="yourname" className="bg-black/30 border-white/10 mt-1" />
+
+          {/* STEP 1: contact + roblox username */}
+          {step === 'form' && (
+            <>
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <Label className="text-xs text-slate-400">Discord username</Label>
+                    <Input value={info.discordName} onChange={e => setInfo({ ...info, discordName: e.target.value })} placeholder="yourname" className="bg-black/30 border-white/10 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400"># (optional)</Label>
+                    <Input value={info.discordTag} onChange={e => setInfo({ ...info, discordTag: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="0000" className="bg-black/30 border-white/10 mt-1" />
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-400">Roblox username</Label>
+                  <Input value={info.robloxUsername} onChange={e => setInfo({ ...info, robloxUsername: e.target.value })} placeholder="RobloxUser123" className="bg-black/30 border-white/10 mt-1" onKeyDown={e => { if (e.key === 'Enter') verifyAccount() }} />
+                  <p className="text-[11px] text-slate-500 mt-1">We'll look this up so you can confirm it's your account.</p>
+                </div>
               </div>
-              <div>
-                <Label className="text-xs text-slate-400"># (optional)</Label>
-                <Input value={info.discordTag} onChange={e => setInfo({ ...info, discordTag: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="0000" className="bg-black/30 border-white/10 mt-1" />
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+                <Button disabled={verifying} onClick={verifyAccount} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-bold">{verifying ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Looking up...</> : 'Verify Roblox account'}</Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {/* STEP 2: confirm account */}
+          {step === 'confirm' && rbxProfile && (
+            <>
+              <div className="flex flex-col items-center text-center py-2">
+                <img src={rbxProfile.headshotUrl || rbxProfile.avatarUrl} className="w-24 h-24 rounded-full bg-black/40 border border-white/10" alt="" />
+                <div className="flex items-center gap-1.5 mt-3">
+                  <p className="text-lg font-black">{rbxProfile.displayName}</p>
+                  {rbxProfile.hasVerifiedBadge && <BadgeCheck className="w-4 h-4 text-sky-400" />}
+                </div>
+                <p className="text-sm text-slate-400">@{rbxProfile.name}</p>
+                <a href={`https://www.roblox.com/users/${rbxProfile.id}/profile`} target="_blank" rel="noreferrer" className="text-xs text-violet-300 hover:underline mt-1 flex items-center gap-1">View profile <ExternalLink className="w-3 h-3" /></a>
               </div>
-            </div>
-            <div>
-              <Label className="text-xs text-slate-400">Roblox username</Label>
-              <Input value={info.robloxUsername} onChange={e => setInfo({ ...info, robloxUsername: e.target.value })} placeholder="RobloxUser123" className="bg-black/30 border-white/10 mt-1" />
-            </div>
-          </div>
-          {!cfg?.cryptoConfigured && <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">Demo mode: live crypto isn't configured yet, so this will simulate a confirmed payment.</p>}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-            <Button disabled={buying} onClick={buy} className="bg-gradient-to-r from-amber-500 to-orange-500 font-bold">{buying ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Starting...</> : 'Continue to Payment'}</Button>
-          </DialogFooter>
+              <DialogFooter className="sm:justify-between gap-2">
+                <Button variant="ghost" onClick={() => setStep('form')}>No, re-enter</Button>
+                <Button onClick={confirmAccount} className="bg-gradient-to-r from-emerald-500 to-teal-600 font-bold"><CheckCircle2 className="w-4 h-4 mr-2" /> Yes, this is my account</Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {/* STEP 3: eligibility checks */}
+          {step === 'checks' && (
+            <>
+              {checking || !elig ? (
+                <div className="py-10 flex flex-col items-center text-slate-400"><Loader2 className="w-7 h-7 animate-spin text-violet-400 mb-3" /> Checking your Roblox account...</div>
+              ) : (
+                <div className="space-y-2.5">
+                  {/* Premium */}
+                  {elig.premiumChecked
+                    ? <StatusRow ok={elig.premium} title={elig.premium ? 'Roblox Premium active' : 'No Roblox Premium detected'} desc={elig.premium ? "You have the Premium (Roblox+) mark." : 'Trading limiteds requires Roblox Premium. You can still continue, but delivery may not be possible without it.'} />
+                    : <StatusRow ok={false} title="Couldn't verify Premium" desc="We couldn't confirm Premium right now. Make sure you have Roblox Premium so the item can be traded to you." />}
+                  {/* Trades */}
+                  {elig.tradesChecked
+                    ? <StatusRow ok={elig.tradesEnabled} title={elig.tradesEnabled ? 'Trades are enabled' : 'Trades appear to be disabled'} desc={elig.tradesEnabled ? 'Your account can receive trades.' : 'We could not send you a trade.'}>
+                        {!elig.tradesEnabled && <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Enable trades: Settings → Privacy → “Who can trade with me” → Everyone <ExternalLink className="w-3 h-3" /></a>}
+                      </StatusRow>
+                    : <StatusRow ok={false} title="Make sure trades are enabled" desc="We couldn't verify your trade setting. Please enable trading so we can deliver the item.">
+                        <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>
+                      </StatusRow>}
+                  {/* Inventory */}
+                  {elig.inventoryChecked
+                    ? <StatusRow ok={elig.inventoryPublic} title={elig.inventoryPublic ? 'Inventory is public' : 'Inventory is private'} desc={elig.inventoryPublic ? 'We can verify your items.' : 'Set your inventory to public so we can verify and deliver items.'}>
+                        {!elig.inventoryPublic && <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Settings → Privacy → “Who can see my inventory” → Everyone <ExternalLink className="w-3 h-3" /></a>}
+                      </StatusRow>
+                    : <StatusRow ok={false} title="Couldn't check inventory visibility" />}
+
+                  {/* Limiteds selection */}
+                  <div className="pt-1">
+                    <div className="flex items-center justify-between mb-2">
+                      <Label className="text-xs text-slate-300 font-semibold">Choose the item(s) you'll give</Label>
+                      <span className="text-[11px] text-slate-500">Each must be under {Number(elig.rapLimit).toLocaleString()} RAP</span>
+                    </div>
+                    {elig.limiteds.length === 0 ? (
+                      <p className="text-xs text-slate-500 p-3 rounded-lg bg-black/30 border border-white/5">No limiteds found on this account{elig.inventoryPublic === false ? ' (inventory is private)' : ''}.</p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                        {elig.limiteds.map(l => {
+                          const over = (l.rap ?? 0) >= elig.rapLimit
+                          const sel = giveItems.includes(l.assetId)
+                          return (
+                            <button key={l.assetId} onClick={() => toggleGive(l.assetId)} className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-colors ${sel ? 'border-violet-500 bg-violet-500/10' : 'border-white/10 bg-black/30 hover:border-white/20'}`}>
+                              <img src={l.imageUrl} className="w-10 h-10 rounded-md object-cover bg-black/40 shrink-0" alt="" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium truncate">{l.name}</p>
+                                <p className={`text-[11px] flex items-center gap-1 ${over ? 'text-amber-400' : 'text-slate-400'}`}>RAP {l.rap != null ? Number(l.rap).toLocaleString() : '—'}{over && <span className="inline-flex items-center gap-0.5"><AlertTriangle className="w-3 h-3" /> over {Number(elig.rapLimit / 1000)}k</span>}</p>
+                              </div>
+                              {sel && <CheckCircle2 className="w-4 h-4 text-violet-400 shrink-0" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {giveItems.some(id => { const it = elig.limiteds.find(l => l.assetId === id); return it && (it.rap ?? 0) >= elig.rapLimit }) && (
+                      <p className="text-[11px] text-amber-300 mt-2 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> One or more selected items are over {Number(elig.rapLimit).toLocaleString()} RAP.</p>
+                    )}
+                  </div>
+
+                  {!cfg?.cryptoConfigured && <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">Demo mode: live crypto isn't configured yet, so this will simulate a confirmed payment.</p>}
+                  <p className="text-[11px] text-slate-500 text-center">Warnings won't block your purchase — you can still continue to payment.</p>
+                </div>
+              )}
+              <DialogFooter className="sm:justify-between gap-2">
+                <Button variant="ghost" onClick={() => setStep('confirm')}>Back</Button>
+                <Button disabled={buying || checking} onClick={buy} className="bg-gradient-to-r from-amber-500 to-orange-500 font-bold">{buying ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Starting...</> : 'Continue to Payment'}</Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

@@ -253,6 +253,46 @@ async function robloxLimiteds(userId) {
   const thumbs = await robloxAssetThumbs(data.map(d => d.assetId))
   return data.map(d => ({ assetId: d.assetId, name: d.name, rap: d.recentAveragePrice, originalPrice: d.originalPrice, serialNumber: d.serialNumber, stock: d.assetStock, imageUrl: thumbs[d.assetId] || null }))
 }
+
+// ---------------- Roblox AUTHENTICATED checks (checkout eligibility) ----------------
+// Uses a server-side .ROBLOSECURITY cookie to read Premium + trade-privacy, which Roblox
+// does NOT expose to anonymous requests. The cookie stays server-side (never sent to the browser).
+const RAP_LIMIT = 1500
+function robloxCookie() { const c = process.env.ROBLOX_COOKIE; return c && c.trim() ? c.trim() : null }
+async function robloxAuthGetJson(url) {
+  const ck = robloxCookie()
+  const headers = { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }
+  if (ck) headers['Cookie'] = `.ROBLOSECURITY=${ck}`
+  const res = await fetch(url, { headers, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Roblox ${res.status}`)
+  return await res.json()
+}
+async function robloxCheckoutEligibility(userId) {
+  const hasCookie = !!robloxCookie()
+  const out = {
+    userId: Number(userId),
+    premium: null, premiumChecked: false,
+    inventoryPublic: null, inventoryChecked: false,
+    tradesEnabled: null, tradeStatus: null, tradesChecked: false,
+    limiteds: [], rapLimit: RAP_LIMIT
+  }
+  // Inventory visibility (public endpoint, no auth needed)
+  try { const iv = await robloxGetJson(`https://inventory.roblox.com/v1/users/${userId}/can-view-inventory`); out.inventoryPublic = !!iv.canView; out.inventoryChecked = true } catch (e) {}
+  // Premium + trades require the authenticated cookie
+  if (hasCookie) {
+    try { const p = await robloxAuthGetJson(`https://premiumfeatures.roblox.com/v1/users/${userId}/validate-membership`); out.premium = (p === true || p === 'true'); out.premiumChecked = true } catch (e) {}
+    try {
+      const t = await robloxAuthGetJson(`https://trades.roblox.com/v1/users/${userId}/can-trade-with`)
+      out.tradeStatus = t.status || null
+      if (t.canTrade === true || t.status === 'CanTrade') { out.tradesEnabled = true; out.tradesChecked = true }
+      else if (t.status && !['SenderCannotTrade', 'Unknown', 'InsufficientPermissions'].includes(t.status)) { out.tradesEnabled = false; out.tradesChecked = true }
+      // 'SenderCannotTrade' etc = our own account limitation, not the buyer's -> leave unchecked so UI shows the "enable trades" guidance.
+    } catch (e) {}
+  }
+  // Owned limiteds so the buyer can pick which item(s) to give (each flagged if RAP >= limit)
+  try { out.limiteds = await robloxLimiteds(userId) } catch (e) { out.limiteds = [] }
+  return out
+}
 const REGULAR_TYPES = [[8, 'Hats'], [41, 'Hair'], [42, 'Face Accessories'], [43, 'Neck'], [44, 'Shoulder'], [45, 'Front'], [46, 'Back'], [47, 'Waist'], [18, 'Faces'], [19, 'Gear'], [11, 'Shirts'], [12, 'Pants']]
 async function robloxRegularItems(userId) {
   const results = await Promise.allSettled(REGULAR_TYPES.map(([tid]) => robloxGetJson(`https://inventory.roblox.com/v2/users/${userId}/inventory/${tid}?limit=25&sortOrder=Desc`)))
@@ -431,6 +471,13 @@ async function handleRoute(request, { params }) {
       try { return json(await robloxRapHistory(path[1])) }
       catch (e) { return json({ totalRap: 0, count: 0, tracked: 0, history: [], private: true }) }
     }
+    // Checkout: verify buyer's Roblox account eligibility (premium / trades / inventory / owned limiteds)
+    if (route === '/checkout/eligibility' && method === 'GET') {
+      const userId = q.get('userId')
+      if (!userId || !/^\d+$/.test(String(userId))) return json({ error: 'Valid Roblox userId required' }, 400)
+      try { return json({ eligibility: await robloxCheckoutEligibility(userId) }) }
+      catch (e) { return json({ error: e.message || 'Eligibility check failed' }, 502) }
+    }
 
     // ---------- AUTH ----------
     if (route === '/auth/signup' && method === 'POST') {
@@ -524,11 +571,13 @@ async function handleRoute(request, { params }) {
       const discordTag = (b.discordTag || '').toString().trim()
       const robloxUsername = (b.robloxUsername || '').toString().trim()
       if (!discordName || !robloxUsername) return json({ error: 'Please provide your Discord username and Roblox username before paying.' }, 400)
+      const robloxUserId = b.robloxUserId ? Number(b.robloxUserId) : null
+      const giveItems = Array.isArray(b.giveItems) ? b.giveItems.slice(0, 20).map(it => ({ assetId: it.assetId, name: it.name, rap: it.rap })) : []
 
       const order = {
         id: uuidv4(), orderId: `ord_${uuidv4()}`, txNumber: await nextTxNumber(db), listingId: listing.id, item: listing.item,
         buyerId: user.id, buyerName: user.username, sellerName: listing.sellerName,
-        buyerInfo: { discordName, discordTag, robloxUsername },
+        buyerInfo: { discordName, discordTag, robloxUsername, robloxUserId, giveItems },
         amountUsd: listing.price, currency: 'USD',
         provider: 'blockbee', status: 'pending_payment', checkoutUrl: null,
         nonce: uuidv4(), blockbeePaymentId: null, createdAt: new Date(), paidAt: null

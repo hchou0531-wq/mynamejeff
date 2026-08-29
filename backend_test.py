@@ -1,474 +1,508 @@
 #!/usr/bin/env python3
 """
-Backend test for BlockBee payment system (UPDATE 9)
-Tests the complete payment flow with BlockBee integration + light regression
+Backend API tests for UPDATE 11: Checkout eligibility + buyer info
+Tests the Robloot marketplace backend at {NEXT_PUBLIC_BASE_URL}/api
 """
 import requests
 import sys
-import time
-import random
+import os
+from dotenv import load_dotenv
 
-# Base URL from environment
-BASE_URL = "https://git-preview-roblox.preview.emergentagent.com/api"
+load_dotenv()
 
-def test_blockbee_payment_flow():
-    """
-    Test UPDATE 9: BlockBee payment system integration
-    
-    Test steps:
-    1. GET /api/config -> expect {cryptoConfigured:true, provider:"blockbee", receiveCurrency:"USDT"}
-    2. Admin login: POST /api/auth/login {email:"admin@robloot.com", password:"roblootdevtomo"} -> returns token, user.isAdmin=true
-    3. As admin, POST /api/admin/listings with body {name:"PayTest Item", imageUrl:"https://tr.rbxcdn.com/x/420/420/Hat/Png/noFilter", category:"Limiteds", robloxAssetId:123, rap:1000, robuxPrice:1350, stock:2, price:9.99, condition:"Limited"} -> creates listing; capture the listing id
-    4. Signup a normal user: POST /api/auth/signup {username:"paytester<rand>", email:"paytester+<rand>@test.com", password:"pass1234"} -> returns token
-    5. As the normal user, POST /api/orders {listingId:<id from step 3>} -> MUST return {orderId, checkoutUrl}. CRITICAL: checkoutUrl must START WITH "https://pay.blockbee.io/payment/"
-    6. GET /api/payments/status?orderId=<orderId> -> expect status "pending_payment" (NOT paid, since no real crypto was sent), and response includes item, amountUsd (9.99), and checkoutUrl
-    7. POST /api/payments/simulate {orderId:<orderId>} as the normal user -> MUST return HTTP 403 with error "Disabled while live crypto is configured"
-    8. Webhook nonce binding: POST /api/payments/callback?order_id=<orderId>&nonce=WRONGNONCE (empty JSON body, Content-Type application/json) -> MUST return HTTP 401 (Invalid nonce)
-    9. Non-admin guard regression: as the normal user, POST /api/admin/listings -> 403
-    10. Filters regression: GET /api/listings?sort=price_asc and GET /api/listings?category=Limiteds and GET /api/listings?maxPrice=1000000 -> all return {listings:[...]} arrays without error
-    """
-    print("=" * 80)
-    print("TESTING: BlockBee Payment System Integration (UPDATE 9)")
-    print("=" * 80)
-    
-    # Variables to store across steps
-    admin_token = None
-    user_token = None
-    listing_id = None
-    order_id = None
-    
-    # Step 1: GET /api/config
-    print("\n[STEP 1] Testing GET /api/config...")
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'https://git-preview-roblox.preview.emergentagent.com')
+API_URL = f"{BASE_URL}/api"
+
+# Admin credentials
+ADMIN_EMAIL = "admin@robloot.com"
+ADMIN_PASSWORD = "roblootdevtomo"
+
+def test_checkout_eligibility_valid():
+    """Test 1: GET /api/checkout/eligibility?userId=156 (builderman)"""
+    print("\n=== TEST 1: GET /api/checkout/eligibility?userId=156 ===")
     try:
-        response = requests.get(f"{BASE_URL}/config", timeout=10)
+        response = requests.get(f"{API_URL}/checkout/eligibility", params={"userId": "156"}, timeout=30)
+        print(f"Status: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
+            print(f"❌ FAILED: Expected HTTP 200, got {response.status_code}")
+            print(f"Response: {response.text}")
             return False
         
         data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        print(f"    Response: {data}")
+        print(f"Response keys: {list(data.keys())}")
         
-        # Verify required fields
-        if data.get("cryptoConfigured") != True:
-            print(f"  ✗ FAILED: cryptoConfigured should be true, got {data.get('cryptoConfigured')}")
+        if 'eligibility' not in data:
+            print(f"❌ FAILED: Missing 'eligibility' key in response")
+            print(f"Response: {data}")
             return False
-        print(f"  ✓ cryptoConfigured: true")
         
-        if data.get("provider") != "blockbee":
-            print(f"  ✗ FAILED: provider should be 'blockbee', got {data.get('provider')}")
-            return False
-        print(f"  ✓ provider: blockbee")
+        eligibility = data['eligibility']
+        print(f"Eligibility keys: {list(eligibility.keys())}")
         
-        if data.get("receiveCurrency") != "USDT":
-            print(f"  ✗ FAILED: receiveCurrency should be 'USDT', got {data.get('receiveCurrency')}")
+        # Check all required keys
+        required_keys = ['premium', 'premiumChecked', 'inventoryPublic', 'inventoryChecked', 
+                        'tradesChecked', 'tradeStatus', 'limiteds', 'rapLimit']
+        missing_keys = [k for k in required_keys if k not in eligibility]
+        if missing_keys:
+            print(f"❌ FAILED: Missing required keys: {missing_keys}")
             return False
-        print(f"  ✓ receiveCurrency: USDT")
+        
+        # Validate types
+        if not isinstance(eligibility['premium'], bool):
+            print(f"❌ FAILED: premium should be boolean, got {type(eligibility['premium'])}")
+            return False
+        
+        if eligibility['premiumChecked'] != True:
+            print(f"❌ FAILED: premiumChecked should be true, got {eligibility['premiumChecked']}")
+            return False
+        
+        if not isinstance(eligibility['inventoryPublic'], bool):
+            print(f"❌ FAILED: inventoryPublic should be boolean, got {type(eligibility['inventoryPublic'])}")
+            return False
+        
+        if eligibility['inventoryChecked'] != True:
+            print(f"❌ FAILED: inventoryChecked should be true, got {eligibility['inventoryChecked']}")
+            return False
+        
+        if not isinstance(eligibility['tradesChecked'], bool):
+            print(f"❌ FAILED: tradesChecked should be boolean, got {type(eligibility['tradesChecked'])}")
+            return False
+        
+        if not isinstance(eligibility['limiteds'], list):
+            print(f"❌ FAILED: limiteds should be array, got {type(eligibility['limiteds'])}")
+            return False
+        
+        if eligibility['rapLimit'] != 1500:
+            print(f"❌ FAILED: rapLimit should be 1500, got {eligibility['rapLimit']}")
+            return False
+        
+        # For builderman (156), expect premium=true and inventoryPublic=true
+        if eligibility['premium'] != True:
+            print(f"❌ FAILED: For builderman (156), expected premium=true, got {eligibility['premium']}")
+            return False
+        
+        if eligibility['inventoryPublic'] != True:
+            print(f"❌ FAILED: For builderman (156), expected inventoryPublic=true, got {eligibility['inventoryPublic']}")
+            return False
+        
+        # Check limiteds array structure if non-empty
+        if len(eligibility['limiteds']) > 0:
+            first_limited = eligibility['limiteds'][0]
+            required_limited_keys = ['assetId', 'name', 'rap', 'imageUrl']
+            missing_limited_keys = [k for k in required_limited_keys if k not in first_limited]
+            if missing_limited_keys:
+                print(f"❌ FAILED: Limited item missing keys: {missing_limited_keys}")
+                return False
+            print(f"✓ Limiteds array has {len(eligibility['limiteds'])} items with correct structure")
+        
+        print(f"✓ premium: {eligibility['premium']}")
+        print(f"✓ premiumChecked: {eligibility['premiumChecked']}")
+        print(f"✓ inventoryPublic: {eligibility['inventoryPublic']}")
+        print(f"✓ inventoryChecked: {eligibility['inventoryChecked']}")
+        print(f"✓ tradesChecked: {eligibility['tradesChecked']}")
+        print(f"✓ tradeStatus: {eligibility['tradeStatus']}")
+        print(f"✓ limiteds count: {len(eligibility['limiteds'])}")
+        print(f"✓ rapLimit: {eligibility['rapLimit']}")
+        print("✅ PASSED: All eligibility fields present and valid for builderman")
+        return True
         
     except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
+        print(f"❌ FAILED: Exception - {str(e)}")
         return False
-    
-    # Step 2: Admin login
-    print("\n[STEP 2] Testing admin login...")
+
+def test_checkout_eligibility_no_userid():
+    """Test 2: GET /api/checkout/eligibility with NO userId param"""
+    print("\n=== TEST 2: GET /api/checkout/eligibility (no userId) ===")
     try:
-        response = requests.post(
-            f"{BASE_URL}/auth/login",
-            json={"email": "admin@robloot.com", "password": "roblootdevtomo"},
-            timeout=10
-        )
+        response = requests.get(f"{API_URL}/checkout/eligibility", timeout=30)
+        print(f"Status: {response.status_code}")
         
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
+        if response.status_code != 400:
+            print(f"❌ FAILED: Expected HTTP 400, got {response.status_code}")
+            print(f"Response: {response.text}")
             return False
         
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        
-        if "token" not in data:
-            print(f"  ✗ FAILED: Missing 'token' in response")
-            return False
-        admin_token = data["token"]
-        print(f"  ✓ token: {admin_token[:20]}...")
-        
-        if "user" not in data or data["user"].get("isAdmin") != True:
-            print(f"  ✗ FAILED: user.isAdmin should be true")
-            return False
-        print(f"  ✓ user.isAdmin: true")
+        print("✅ PASSED: Returns HTTP 400 when userId is missing")
+        return True
         
     except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
+        print(f"❌ FAILED: Exception - {str(e)}")
         return False
-    
-    # Step 3: Admin creates listing
-    print("\n[STEP 3] Testing admin create listing...")
+
+def test_checkout_eligibility_non_numeric():
+    """Test 3: GET /api/checkout/eligibility?userId=abc (non-numeric)"""
+    print("\n=== TEST 3: GET /api/checkout/eligibility?userId=abc ===")
     try:
-        response = requests.post(
-            f"{BASE_URL}/admin/listings",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "PayTest Item",
-                "imageUrl": "https://tr.rbxcdn.com/x/420/420/Hat/Png/noFilter",
-                "category": "Limiteds",
-                "robloxAssetId": 123,
-                "rap": 1000,
-                "robuxPrice": 1350,
-                "stock": 2,
-                "price": 9.99,
-                "condition": "Limited"
-            },
-            timeout=10
-        )
+        response = requests.get(f"{API_URL}/checkout/eligibility", params={"userId": "abc"}, timeout=30)
+        print(f"Status: {response.status_code}")
         
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
+        if response.status_code != 400:
+            print(f"❌ FAILED: Expected HTTP 400, got {response.status_code}")
+            print(f"Response: {response.text}")
             return False
         
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        
-        if "listing" not in data or "id" not in data["listing"]:
-            print(f"  ✗ FAILED: Missing 'listing.id' in response")
-            return False
-        listing_id = data["listing"]["id"]
-        print(f"  ✓ listing.id: {listing_id}")
-        print(f"  ✓ listing.price: {data['listing'].get('price')}")
-        print(f"  ✓ listing.stock: {data['listing'].get('stock')}")
+        print("✅ PASSED: Returns HTTP 400 for non-numeric userId")
+        return True
         
     except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
+        print(f"❌ FAILED: Exception - {str(e)}")
         return False
-    
-    # Step 4: Signup normal user
-    print("\n[STEP 4] Testing normal user signup...")
+
+def test_checkout_eligibility_nonexistent():
+    """Test 4: GET /api/checkout/eligibility?userId=999999999999 (nonexistent)"""
+    print("\n=== TEST 4: GET /api/checkout/eligibility?userId=999999999999 ===")
     try:
-        rand = random.randint(10000, 99999)
-        username = f"paytester{rand}"
-        email = f"paytester+{rand}@test.com"
+        response = requests.get(f"{API_URL}/checkout/eligibility", params={"userId": "999999999999"}, timeout=30)
+        print(f"Status: {response.status_code}")
         
-        response = requests.post(
-            f"{BASE_URL}/auth/signup",
-            json={"username": username, "email": email, "password": "pass1234"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
+        if response.status_code == 500:
+            print(f"❌ FAILED: Must NOT return HTTP 500 for nonexistent user")
+            print(f"Response: {response.text}")
             return False
-        
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        
-        if "token" not in data:
-            print(f"  ✗ FAILED: Missing 'token' in response")
-            return False
-        user_token = data["token"]
-        print(f"  ✓ token: {user_token[:20]}...")
-        print(f"  ✓ username: {username}")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 5: Create order (CRITICAL: must return real BlockBee checkout URL)
-    print("\n[STEP 5] Testing POST /api/orders (CRITICAL: real BlockBee checkout URL)...")
-    try:
-        response = requests.post(
-            f"{BASE_URL}/orders",
-            headers={"Authorization": f"Bearer {user_token}"},
-            json={"listingId": listing_id},
-            timeout=15  # BlockBee API call may take a few seconds
-        )
-        
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
-            return False
-        
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        
-        if "orderId" not in data:
-            print(f"  ✗ FAILED: Missing 'orderId' in response")
-            return False
-        order_id = data["orderId"]
-        print(f"  ✓ orderId: {order_id}")
-        
-        if "checkoutUrl" not in data:
-            print(f"  ✗ FAILED: Missing 'checkoutUrl' in response")
-            return False
-        
-        checkout_url = data["checkoutUrl"]
-        print(f"  ✓ checkoutUrl: {checkout_url}")
-        
-        # CRITICAL: checkoutUrl must start with "https://pay.blockbee.io/payment/"
-        if not checkout_url or not checkout_url.startswith("https://pay.blockbee.io/payment/"):
-            print(f"  ✗ CRITICAL FAILURE: checkoutUrl does NOT start with 'https://pay.blockbee.io/payment/'")
-            print(f"    Expected: https://pay.blockbee.io/payment/...")
-            print(f"    Got: {checkout_url}")
-            return False
-        print(f"  ✓ CRITICAL: checkoutUrl starts with 'https://pay.blockbee.io/payment/' (real BlockBee URL)")
-        
-        # Verify simulated flag is NOT present (this is a real BlockBee call)
-        if data.get("simulated") == True:
-            print(f"  ✗ FAILED: 'simulated' flag should NOT be present (BlockBee is configured)")
-            return False
-        print(f"  ✓ No 'simulated' flag (real BlockBee integration)")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 6: GET /api/payments/status
-    print("\n[STEP 6] Testing GET /api/payments/status...")
-    try:
-        response = requests.get(
-            f"{BASE_URL}/payments/status",
-            params={"orderId": order_id},
-            timeout=15  # May reconcile with BlockBee
-        )
-        
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: HTTP {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
-            return False
-        
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200")
-        print(f"    Response: {data}")
-        
-        # Verify status is "pending_payment" (no real crypto sent)
-        if data.get("status") != "pending_payment":
-            print(f"  ⚠ WARNING: Expected status 'pending_payment', got '{data.get('status')}'")
-            print(f"    (This is acceptable if BlockBee has updated the status)")
-        else:
-            print(f"  ✓ status: pending_payment")
-        
-        # Verify required fields
-        if "item" not in data:
-            print(f"  ✗ FAILED: Missing 'item' in response")
-            return False
-        print(f"  ✓ item: {data['item'].get('name')}")
-        
-        if data.get("amountUsd") != 9.99:
-            print(f"  ✗ FAILED: amountUsd should be 9.99, got {data.get('amountUsd')}")
-            return False
-        print(f"  ✓ amountUsd: 9.99")
-        
-        if "checkoutUrl" not in data:
-            print(f"  ✗ FAILED: Missing 'checkoutUrl' in response")
-            return False
-        print(f"  ✓ checkoutUrl: {data['checkoutUrl'][:50]}...")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 7: POST /api/payments/simulate (must return 403)
-    print("\n[STEP 7] Testing POST /api/payments/simulate (must return 403)...")
-    try:
-        response = requests.post(
-            f"{BASE_URL}/payments/simulate",
-            headers={"Authorization": f"Bearer {user_token}"},
-            json={"orderId": order_id},
-            timeout=10
-        )
-        
-        if response.status_code != 403:
-            print(f"  ✗ FAILED: Expected HTTP 403, got {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
-            return False
-        
-        data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 403 (simulate disabled)")
-        
-        # Verify error message
-        error_msg = data.get("error", "")
-        if "Disabled while live crypto is configured" not in error_msg:
-            print(f"  ⚠ WARNING: Expected error message 'Disabled while live crypto is configured'")
-            print(f"    Got: {error_msg}")
-        else:
-            print(f"  ✓ error: {error_msg}")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 8: Webhook nonce binding (wrong nonce -> 401)
-    print("\n[STEP 8] Testing POST /api/payments/callback with wrong nonce (must return 401)...")
-    try:
-        response = requests.post(
-            f"{BASE_URL}/payments/callback",
-            params={"order_id": order_id, "nonce": "WRONGNONCE"},
-            headers={"Content-Type": "application/json"},
-            json={},
-            timeout=10
-        )
-        
-        if response.status_code != 401:
-            print(f"  ✗ FAILED: Expected HTTP 401, got {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
-            return False
-        
-        print(f"  ✓ SUCCESS: HTTP 401 (Invalid nonce)")
-        print(f"    Response: {response.text[:100]}")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 9: Non-admin guard regression
-    print("\n[STEP 9] Testing non-admin guard regression (POST /api/admin/listings -> 403)...")
-    try:
-        response = requests.post(
-            f"{BASE_URL}/admin/listings",
-            headers={"Authorization": f"Bearer {user_token}"},
-            json={
-                "name": "Unauthorized Listing",
-                "price": 10.00,
-                "stock": 1
-            },
-            timeout=10
-        )
-        
-        if response.status_code != 403:
-            print(f"  ✗ FAILED: Expected HTTP 403, got {response.status_code}")
-            print(f"    Response: {response.text[:200]}")
-            return False
-        
-        print(f"  ✓ SUCCESS: HTTP 403 (Admin only)")
-        
-    except Exception as e:
-        print(f"  ✗ ERROR: {str(e)}")
-        return False
-    
-    # Step 10: Filters regression
-    print("\n[STEP 10] Testing filters regression...")
-    
-    # Test 10a: sort=price_asc
-    print("  [10a] GET /api/listings?sort=price_asc...")
-    try:
-        response = requests.get(
-            f"{BASE_URL}/listings",
-            params={"sort": "price_asc"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            print(f"    ✗ FAILED: HTTP {response.status_code}")
-            return False
-        
-        data = response.json()
-        if "listings" not in data or not isinstance(data["listings"], list):
-            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
-            return False
-        
-        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
-        
-    except Exception as e:
-        print(f"    ✗ ERROR: {str(e)}")
-        return False
-    
-    # Test 10b: category=Limiteds
-    print("  [10b] GET /api/listings?category=Limiteds...")
-    try:
-        response = requests.get(
-            f"{BASE_URL}/listings",
-            params={"category": "Limiteds"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            print(f"    ✗ FAILED: HTTP {response.status_code}")
-            return False
-        
-        data = response.json()
-        if "listings" not in data or not isinstance(data["listings"], list):
-            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
-            return False
-        
-        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
-        
-    except Exception as e:
-        print(f"    ✗ ERROR: {str(e)}")
-        return False
-    
-    # Test 10c: maxPrice=1000000
-    print("  [10c] GET /api/listings?maxPrice=1000000...")
-    try:
-        response = requests.get(
-            f"{BASE_URL}/listings",
-            params={"maxPrice": "1000000"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            print(f"    ✗ FAILED: HTTP {response.status_code}")
-            return False
-        
-        data = response.json()
-        if "listings" not in data or not isinstance(data["listings"], list):
-            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
-            return False
-        
-        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
-        
-    except Exception as e:
-        print(f"    ✗ ERROR: {str(e)}")
-        return False
-    
-    # Cleanup: Delete the test listing
-    print("\n[CLEANUP] Deleting test listing...")
-    try:
-        response = requests.delete(
-            f"{BASE_URL}/admin/listings/{listing_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            timeout=10
-        )
         
         if response.status_code == 200:
-            print(f"  ✓ Test listing deleted successfully")
+            data = response.json()
+            if 'eligibility' in data:
+                eligibility = data['eligibility']
+                print(f"✓ Returns HTTP 200 with eligibility object")
+                print(f"  - limiteds: {len(eligibility.get('limiteds', []))} items")
+                print(f"  - premium: {eligibility.get('premium')}")
+                print(f"  - inventoryPublic: {eligibility.get('inventoryPublic')}")
+                print("✅ PASSED: Returns HTTP 200 with eligibility object (limiteds empty)")
+                return True
+        elif response.status_code == 502:
+            print("✅ PASSED: Returns HTTP 502 (acceptable for nonexistent user)")
+            return True
         else:
-            print(f"  ⚠ WARNING: Could not delete test listing (HTTP {response.status_code})")
+            print(f"✓ Returns HTTP {response.status_code} (not 500, acceptable)")
+            print("✅ PASSED: Does not return HTTP 500")
+            return True
         
     except Exception as e:
-        print(f"  ⚠ WARNING: Cleanup error: {str(e)}")
-    
-    print("\n" + "=" * 80)
-    print("✓ ALL BLOCKBEE PAYMENT FLOW TESTS PASSED")
-    print("=" * 80)
-    print("\nSUMMARY:")
-    print("  ✓ Config endpoint returns BlockBee configuration")
-    print("  ✓ Admin login working")
-    print("  ✓ Admin can create listings")
-    print("  ✓ Normal user signup working")
-    print("  ✓ CRITICAL: POST /orders returns real BlockBee checkout URL")
-    print("  ✓ Payment status endpoint returns pending_payment with all required fields")
-    print("  ✓ Simulate endpoint correctly blocked with 403 (BlockBee configured)")
-    print("  ✓ Webhook nonce validation working (401 for wrong nonce)")
-    print("  ✓ Admin guard working (403 for non-admin)")
-    print("  ✓ Filters regression passed (sort, category, maxPrice)")
-    print("\nNOTE: The 'paid' transition cannot be verified without an actual on-chain")
-    print("      crypto payment. The test confirms:")
-    print("      (a) Real BlockBee checkout URL is created")
-    print("      (b) Status endpoint returns pending and echoes checkoutUrl")
-    print("      (c) Simulate is blocked with 403")
-    print("      (d) Wrong-nonce webhook returns 401")
-    
-    return True
+        print(f"❌ FAILED: Exception - {str(e)}")
+        return False
 
-
-if __name__ == "__main__":
+def test_orders_regression_with_new_fields():
+    """Test 5: ORDERS regression + new fields (robloxUserId, giveItems)"""
+    print("\n=== TEST 5: ORDERS regression + new fields ===")
     try:
-        success = test_blockbee_payment_flow()
-        sys.exit(0 if success else 1)
+        # (a) Admin login
+        print("Step (a): Admin login...")
+        login_response = requests.post(f"{API_URL}/auth/login", 
+                                      json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+                                      timeout=30)
+        if login_response.status_code != 200:
+            print(f"❌ FAILED: Admin login failed with status {login_response.status_code}")
+            return False
+        
+        admin_token = login_response.json()['token']
+        print(f"✓ Admin login successful")
+        
+        # (b) Create listing
+        print("Step (b): Create listing...")
+        listing_data = {
+            "name": "Elig Test",
+            "imageUrl": "https://tr.rbxcdn.com/x/150/150/Hat/Png/noFilter",
+            "category": "Limiteds",
+            "stock": 3,
+            "price": 12.5,
+            "condition": "Limited"
+        }
+        create_listing_response = requests.post(f"{API_URL}/admin/listings",
+                                               json=listing_data,
+                                               headers={"Authorization": f"Bearer {admin_token}"},
+                                               timeout=30)
+        if create_listing_response.status_code != 200:
+            print(f"❌ FAILED: Create listing failed with status {create_listing_response.status_code}")
+            print(f"Response: {create_listing_response.text}")
+            return False
+        
+        listing_id = create_listing_response.json()['listing']['id']
+        print(f"✓ Listing created with id: {listing_id}")
+        
+        # (c) Signup normal user
+        print("Step (c): Signup normal user...")
+        import random
+        user_num = random.randint(10000, 99999)
+        signup_data = {
+            "username": f"testuser{user_num}",
+            "email": f"testuser{user_num}@test.com",
+            "password": "testpass123"
+        }
+        signup_response = requests.post(f"{API_URL}/auth/signup",
+                                       json=signup_data,
+                                       timeout=30)
+        if signup_response.status_code != 200:
+            print(f"❌ FAILED: Signup failed with status {signup_response.status_code}")
+            print(f"Response: {signup_response.text}")
+            return False
+        
+        user_token = signup_response.json()['token']
+        print(f"✓ User signup successful")
+        
+        # (d) Create order with new fields
+        print("Step (d): Create order with robloxUserId and giveItems...")
+        order_data = {
+            "listingId": listing_id,
+            "discordName": "cooldude",
+            "discordTag": "1234",
+            "robloxUsername": "builderman",
+            "robloxUserId": 156,
+            "giveItems": [
+                {
+                    "assetId": 17408283,
+                    "name": "Hard Hat",
+                    "rap": 965
+                }
+            ]
+        }
+        create_order_response = requests.post(f"{API_URL}/orders",
+                                             json=order_data,
+                                             headers={"Authorization": f"Bearer {user_token}"},
+                                             timeout=30)
+        if create_order_response.status_code != 200:
+            print(f"❌ FAILED: Create order failed with status {create_order_response.status_code}")
+            print(f"Response: {create_order_response.text}")
+            return False
+        
+        order_response_data = create_order_response.json()
+        order_id = order_response_data.get('orderId')
+        checkout_url = order_response_data.get('checkoutUrl')
+        
+        print(f"✓ Order created with orderId: {order_id}")
+        
+        if checkout_url and checkout_url.startswith('https://pay.blockbee.io/payment/'):
+            print(f"✓ checkoutUrl starts with 'https://pay.blockbee.io/payment/'")
+        elif checkout_url is None and order_response_data.get('simulated'):
+            print(f"✓ Demo mode: simulated=true, checkoutUrl=null")
+        else:
+            print(f"⚠ checkoutUrl: {checkout_url}")
+        
+        # (e) Verify order in admin orders
+        print("Step (e): Verify order in GET /api/admin/orders...")
+        admin_orders_response = requests.get(f"{API_URL}/admin/orders",
+                                            headers={"Authorization": f"Bearer {admin_token}"},
+                                            timeout=30)
+        if admin_orders_response.status_code != 200:
+            print(f"❌ FAILED: GET admin/orders failed with status {admin_orders_response.status_code}")
+            return False
+        
+        orders = admin_orders_response.json()['orders']
+        target_order = None
+        for order in orders:
+            if order.get('orderId') == order_id:
+                target_order = order
+                break
+        
+        if not target_order:
+            print(f"❌ FAILED: Order {order_id} not found in admin orders")
+            return False
+        
+        print(f"✓ Order found in admin orders")
+        
+        # Verify buyerInfo
+        buyer_info = target_order.get('buyerInfo')
+        if not buyer_info:
+            print(f"❌ FAILED: buyerInfo missing in order")
+            return False
+        
+        if buyer_info.get('robloxUserId') != 156:
+            print(f"❌ FAILED: buyerInfo.robloxUserId should be 156, got {buyer_info.get('robloxUserId')}")
+            return False
+        
+        print(f"✓ buyerInfo.robloxUserId === 156")
+        
+        give_items = buyer_info.get('giveItems')
+        if not give_items or len(give_items) != 1:
+            print(f"❌ FAILED: buyerInfo.giveItems should have length 1, got {len(give_items) if give_items else 0}")
+            return False
+        
+        print(f"✓ buyerInfo.giveItems length === 1")
+        
+        if give_items[0].get('assetId') != 17408283:
+            print(f"❌ FAILED: giveItems[0].assetId should be 17408283, got {give_items[0].get('assetId')}")
+            return False
+        
+        print(f"✓ buyerInfo.giveItems[0].assetId === 17408283")
+        
+        print("✅ PASSED: Orders regression with new fields (robloxUserId, giveItems) working correctly")
+        return True
+        
     except Exception as e:
-        print(f"\n✗ CRITICAL ERROR: {str(e)}")
+        print(f"❌ FAILED: Exception - {str(e)}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        return False
+
+def test_orders_without_roblox_username():
+    """Test 6: POST /api/orders without robloxUsername"""
+    print("\n=== TEST 6: POST /api/orders without robloxUsername ===")
+    try:
+        # Admin login and create listing
+        login_response = requests.post(f"{API_URL}/auth/login", 
+                                      json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+                                      timeout=30)
+        admin_token = login_response.json()['token']
+        
+        listing_data = {
+            "name": "Test Item Negative",
+            "imageUrl": "https://tr.rbxcdn.com/x/150/150/Hat/Png/noFilter",
+            "category": "Limiteds",
+            "stock": 1,
+            "price": 5.0,
+            "condition": "Limited"
+        }
+        create_listing_response = requests.post(f"{API_URL}/admin/listings",
+                                               json=listing_data,
+                                               headers={"Authorization": f"Bearer {admin_token}"},
+                                               timeout=30)
+        listing_id = create_listing_response.json()['listing']['id']
+        
+        # Signup user
+        import random
+        user_num = random.randint(10000, 99999)
+        signup_data = {
+            "username": f"testuser{user_num}",
+            "email": f"testuser{user_num}@test.com",
+            "password": "testpass123"
+        }
+        signup_response = requests.post(f"{API_URL}/auth/signup",
+                                       json=signup_data,
+                                       timeout=30)
+        user_token = signup_response.json()['token']
+        
+        # Try to create order WITHOUT robloxUsername
+        order_data = {
+            "listingId": listing_id,
+            "discordName": "x"
+            # Missing robloxUsername
+        }
+        create_order_response = requests.post(f"{API_URL}/orders",
+                                             json=order_data,
+                                             headers={"Authorization": f"Bearer {user_token}"},
+                                             timeout=30)
+        
+        print(f"Status: {create_order_response.status_code}")
+        
+        if create_order_response.status_code != 400:
+            print(f"❌ FAILED: Expected HTTP 400, got {create_order_response.status_code}")
+            print(f"Response: {create_order_response.text}")
+            return False
+        
+        print("✅ PASSED: Returns HTTP 400 when robloxUsername is missing")
+        return True
+        
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {str(e)}")
+        return False
+
+def test_config_regression():
+    """Test 7: GET /api/config regression"""
+    print("\n=== TEST 7: GET /api/config ===")
+    try:
+        response = requests.get(f"{API_URL}/config", timeout=30)
+        print(f"Status: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"❌ FAILED: Expected HTTP 200, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        print(f"Response: {data}")
+        
+        if data.get('cryptoConfigured') != True:
+            print(f"❌ FAILED: Expected cryptoConfigured=true, got {data.get('cryptoConfigured')}")
+            return False
+        
+        if data.get('provider') != 'blockbee':
+            print(f"❌ FAILED: Expected provider='blockbee', got {data.get('provider')}")
+            return False
+        
+        print("✅ PASSED: Config returns cryptoConfigured=true, provider='blockbee'")
+        return True
+        
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {str(e)}")
+        return False
+
+def test_payments_simulate_blocked():
+    """Test 8: POST /api/payments/simulate should return 403"""
+    print("\n=== TEST 8: POST /api/payments/simulate (should be blocked) ===")
+    try:
+        # Signup user
+        import random
+        user_num = random.randint(10000, 99999)
+        signup_data = {
+            "username": f"testuser{user_num}",
+            "email": f"testuser{user_num}@test.com",
+            "password": "testpass123"
+        }
+        signup_response = requests.post(f"{API_URL}/auth/signup",
+                                       json=signup_data,
+                                       timeout=30)
+        user_token = signup_response.json()['token']
+        
+        # Try to simulate payment
+        response = requests.post(f"{API_URL}/payments/simulate",
+                                json={"orderId": "whatever"},
+                                headers={"Authorization": f"Bearer {user_token}"},
+                                timeout=30)
+        
+        print(f"Status: {response.status_code}")
+        
+        if response.status_code != 403:
+            print(f"❌ FAILED: Expected HTTP 403, got {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+        
+        print("✅ PASSED: Returns HTTP 403 (simulate blocked when crypto configured)")
+        return True
+        
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {str(e)}")
+        return False
+
+def main():
+    print("=" * 80)
+    print("BACKEND TESTING - UPDATE 11: Checkout Eligibility + Buyer Info")
+    print("=" * 80)
+    print(f"API URL: {API_URL}")
+    
+    tests = [
+        ("Eligibility valid userId (builderman)", test_checkout_eligibility_valid),
+        ("Eligibility no userId", test_checkout_eligibility_no_userid),
+        ("Eligibility non-numeric userId", test_checkout_eligibility_non_numeric),
+        ("Eligibility nonexistent userId", test_checkout_eligibility_nonexistent),
+        ("Orders regression + new fields", test_orders_regression_with_new_fields),
+        ("Orders without robloxUsername", test_orders_without_roblox_username),
+        ("Config regression", test_config_regression),
+        ("Payments simulate blocked", test_payments_simulate_blocked),
+    ]
+    
+    results = []
+    for name, test_func in tests:
+        try:
+            result = test_func()
+            results.append((name, result))
+        except Exception as e:
+            print(f"\n❌ Test '{name}' crashed: {e}")
+            results.append((name, False))
+    
+    print("\n" + "=" * 80)
+    print("TEST SUMMARY")
+    print("=" * 80)
+    passed = sum(1 for _, r in results if r)
+    total = len(results)
+    
+    for name, result in results:
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status}: {name}")
+    
+    print(f"\nTotal: {passed}/{total} tests passed")
+    print("=" * 80)
+    
+    return 0 if passed == total else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

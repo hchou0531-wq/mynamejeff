@@ -653,8 +653,58 @@ frontend_v10:
     working: true
     comment: "Admin Transactions tab shows #txNumber badge + buyer Discord/Roblox info; each row is a link opening /transaction/<num> in a new tab. New route app/transaction/[num]/page.js: reads rbx_token, calls GET /api/transaction/:num; renders full detail for admins, otherwise shows 'page 505' (verified via screenshot: no-token visitor sees 'page 505')."
 
+## ===== UPDATE 11: checkout Roblox account verification + eligibility checks =====
+backend_v11:
+  - task: "GET /api/checkout/eligibility?userId= (premium/trades/inventory/limiteds)"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New endpoint. Uses server-side ROBLOX_COOKIE (.ROBLOSECURITY) to check Premium (premiumfeatures validate-membership) and trade-privacy (trades can-trade-with), plus public can-view-inventory, plus owned limiteds (with RAP). Returns {eligibility:{premium,premiumChecked,inventoryPublic,inventoryChecked,tradesEnabled,tradeStatus,tradesChecked,limiteds[],rapLimit:1500}}. Manually verified via curl for userId=156 (builderman): premium=true, inventoryPublic=true, tradeStatus='SenderCannotTrade' (server cookie account cannot initiate trades -> tradesChecked=false so UI shows guidance), limiteds populated with rap. Invalid userId -> 400."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - All 4 eligibility tests passed. (1) VALID USER (builderman/156): Returns HTTP 200 with all required keys (premium, premiumChecked, inventoryPublic, inventoryChecked, tradesChecked, tradeStatus, limiteds, rapLimit). For builderman: premium=true, premiumChecked=true, inventoryPublic=true, inventoryChecked=true, tradesChecked=false, tradeStatus='SenderCannotTrade', limiteds array has 48 items with correct structure (assetId, name, rap, imageUrl), rapLimit=1500 ✓ (2) NO USERID: Returns HTTP 400 as expected ✓ (3) NON-NUMERIC USERID (abc): Returns HTTP 400 as expected ✓ (4) NONEXISTENT USER (999999999999): Returns HTTP 200 with eligibility object (limiteds empty, premium=false, inventoryPublic=null) - does NOT return HTTP 500 ✓ All validation and error handling working correctly."
+  - task: "POST /api/orders stores robloxUserId + giveItems in buyerInfo"
+    file: "app/api/[[...path]]/route.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "buyerInfo now also stores robloxUserId (number) and giveItems (array of {assetId,name,rap}, max 20). Existing validation (discordName + robloxUsername required) unchanged. Regression: still returns BlockBee checkoutUrl."
+        -working: true
+        -agent: "testing"
+        -comment: "✓ PASSED - Orders regression with new fields working correctly. (1) Admin login successful ✓ (2) Created listing with stock=3, price=12.5 ✓ (3) Normal user signup successful ✓ (4) POST /api/orders with new fields (robloxUserId=156, giveItems=[{assetId:17408283, name:'Hard Hat', rap:965}]) returns orderId + real BlockBee checkoutUrl starting with 'https://pay.blockbee.io/payment/' ✓ (5) GET /api/admin/orders returns order with buyerInfo.robloxUserId===156 and buyerInfo.giveItems length===1 and buyerInfo.giveItems[0].assetId===17408283 ✓ (6) NEGATIVE TEST: POST /api/orders without robloxUsername returns HTTP 400 as expected ✓ (7) REGRESSION: GET /api/config returns cryptoConfigured=true, provider='blockbee' ✓ (8) POST /api/payments/simulate returns HTTP 403 (blocked when crypto configured) ✓ All 8 tests passed. No critical issues found."
+
+frontend_v11:
+  - task: "Multi-step checkout: enter username -> confirm account -> eligibility checks"
+    file: "app/page.js"
+    working: "NA"
+    needs_retesting: false
+    stuck_count: 0
+    priority: "high"
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Checkout dialog is now a 3-step wizard. Step1: Discord + Roblox username -> 'Verify Roblox account' (GET /profile/lookup). Step2: shows avatar+displayName+@name -> 'Yes, this is my account' / 'No, re-enter'. Step3: runs GET /checkout/eligibility and shows StatusRows for Premium, Trades (with 'enable trades' guidance link when unknown/off), Inventory public; plus a limiteds picker where buyer selects item(s) to give (each item flagged if RAP >= 1500). All checks are warnings-only; 'Continue to Payment' always allowed -> POST /orders -> BlockBee. Main-agent verified via Playwright: all step buttons found and clicked; step3 'Choose the item(s) you'll give' selector rendered with live data. (Final screenshot unreliable due to 512MB dev SPA reload quirk.)"
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+  run_ui: false
+
 agent_communication:
     -agent: "main"
-    -message: "UPDATE 10 backend re-test. Admin: admin@robloot.com/roblootdevtomo. (1) Admin POST /api/admin/listings {name,imageUrl,category,stock,price,condition} -> get listing id. (2) Signup normal user. (3) POST /api/orders {listingId} WITHOUT discordName/robloxUsername -> expect 400. (4) POST /api/orders {listingId, discordName:'cooldude', discordTag:'1234', robloxUsername:'BuilderPro'} -> expect {orderId, checkoutUrl starts with https://pay.blockbee.io/payment/}. (5) GET /api/admin/orders as admin -> the new order has a numeric txNumber and buyerInfo{discordName,discordTag,robloxUsername}. Note the txNumber value N. (6) GET /api/transaction/N as ADMIN -> 200 with transaction incl buyerInfo. (7) GET /api/transaction/N as a NON-admin user token -> 403. (8) GET /api/transaction/N with NO auth -> 403. (9) GET /api/transaction/9999999 as admin -> 404. (10) Regression: /api/config still {cryptoConfigured:true, provider:'blockbee'}; /api/payments/simulate -> 403; listings filters still work. Do NOT modify code. NOTE: paid transition needs real on-chain payment (skip)."
+    -message: "UPDATE 11 backend test please. ROBLOX_COOKIE is configured in env. (1) GET /api/checkout/eligibility?userId=156 -> 200 with {eligibility:{...}}; assert keys present: premium (bool), premiumChecked (should be true), inventoryPublic (bool), inventoryChecked true, tradesChecked (bool), tradeStatus (string|null), limiteds (array, each has assetId/name/rap/imageUrl), rapLimit === 1500. For builderman expect premium===true and inventoryPublic===true. (2) GET /api/checkout/eligibility with no userId or non-numeric -> 400. (3) GET /api/checkout/eligibility?userId=999999999999 (nonexistent) -> should still return 200 with eligibility object (limiteds empty; premium/inventory likely false/null) OR 502; must NOT 500. (4) ORDERS regression: admin login admin@robloot.com/roblootdevtomo; create a listing; signup a user; POST /api/orders {listingId, discordName:'x', robloxUsername:'builderman', robloxUserId:156, giveItems:[{assetId:17408283,name:'Hard Hat',rap:965}]} -> returns orderId + BlockBee checkoutUrl; then GET /api/admin/orders as admin -> the order's buyerInfo contains robloxUserId===156 and giveItems length 1. (5) POST /api/orders WITHOUT robloxUsername still -> 400. Do NOT modify code. Note: 'paid' transition needs real on-chain payment (skip)."
     -agent: "testing"
-    -message: "✅ UPDATE 10 BACKEND TESTING COMPLETE - ALL TESTS PASSED (11/11). Comprehensive testing completed for buyer info collection + sequential transactions + admin-only transaction endpoint: (1) ADMIN LOGIN: Working correctly, isAdmin=true ✓ (2) ADMIN CREATE LISTING: Successfully created listing with stock=5, price=7.50 ✓ (3) BUYER SIGNUP: Normal user signup working ✓ (4) NEGATIVE TEST: POST /orders WITHOUT buyer info correctly returns HTTP 400 with error 'Please provide your Discord username and Roblox username before paying.' ✓ (5) POSITIVE TEST: POST /orders WITH buyer info (discordName, discordTag, robloxUsername) returns orderId + real BlockBee checkoutUrl starting with 'https://pay.blockbee.io/payment/' ✓ (6) ADMIN ORDERS: GET /admin/orders returns order with numeric txNumber=2 (>=1) and complete buyerInfo object {discordName:'cooldude', discordTag:'1234', robloxUsername:'BuilderPro'} ✓ (7) ADMIN TRANSACTION ENDPOINT: GET /transaction/2 as admin returns HTTP 200 with full transaction including txNumber=2, buyerInfo (all fields correct), item, amountUsd=7.5, orderId matching ✓ (8) NON-ADMIN ACCESS: GET /transaction/2 as non-admin user correctly returns HTTP 403 (Forbidden) ✓ (9) NO AUTH ACCESS: GET /transaction/2 without Authorization header correctly returns HTTP 403 (Forbidden) ✓ (10) NOT FOUND: GET /transaction/9999999 as admin correctly returns HTTP 404 (Not found) ✓ (11) REGRESSION: GET /config returns cryptoConfigured=true, provider='blockbee' ✓ POST /payments/simulate returns 403 (disabled) ✓ GET /listings filters (sort=price_asc, category=Limiteds) all working ✓. No critical issues found. UPDATE 10 backend is production-ready."
+    -message: "✅ UPDATE 11 BACKEND TESTING COMPLETE - ALL TESTS PASSED (8/8). Comprehensive testing completed for checkout eligibility + buyer info fields: (1) ELIGIBILITY ENDPOINT - VALID USER (builderman/156): Returns HTTP 200 with all required keys present and correct types. premium=true, premiumChecked=true, inventoryPublic=true, inventoryChecked=true, tradesChecked=false, tradeStatus='SenderCannotTrade', limiteds array has 48 items with correct structure (assetId, name, rap, imageUrl), rapLimit=1500 ✓ (2) ELIGIBILITY - NO USERID: Returns HTTP 400 ✓ (3) ELIGIBILITY - NON-NUMERIC USERID: Returns HTTP 400 ✓ (4) ELIGIBILITY - NONEXISTENT USER (999999999999): Returns HTTP 200 with eligibility object (limiteds empty, premium=false) - does NOT return HTTP 500 ✓ (5) ORDERS REGRESSION WITH NEW FIELDS: Admin login successful, listing created (stock=3, price=12.5), normal user signup successful, POST /api/orders with robloxUserId=156 and giveItems=[{assetId:17408283, name:'Hard Hat', rap:965}] returns orderId + real BlockBee checkoutUrl starting with 'https://pay.blockbee.io/payment/', GET /api/admin/orders confirms buyerInfo.robloxUserId===156 and buyerInfo.giveItems[0].assetId===17408283 ✓ (6) NEGATIVE TEST: POST /api/orders without robloxUsername returns HTTP 400 ✓ (7) CONFIG REGRESSION: Returns cryptoConfigured=true, provider='blockbee' ✓ (8) PAYMENTS SIMULATE: Returns HTTP 403 (blocked when crypto configured) ✓. No critical issues found. Backend UPDATE 11 is production-ready."
