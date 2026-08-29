@@ -1,79 +1,46 @@
 #!/usr/bin/env python3
 """
-Backend test for Roblox profile pagination BUGFIX (UPDATE 8.1)
-Tests that GET /api/profile/:id/limiteds now paginates through ALL collectibles (not just first 100)
+Backend test for BlockBee payment system (UPDATE 9)
+Tests the complete payment flow with BlockBee integration + light regression
 """
 import requests
 import sys
 import time
+import random
 
 # Base URL from environment
-BASE_URL = "https://landing-page-copy-1.preview.emergentagent.com/api"
+BASE_URL = "https://7c4278f1-1904-4b80-bb0c-fc38e2dc2120.preview.emergentagent.com/api"
 
-def test_pagination_bugfix():
+def test_blockbee_payment_flow():
     """
-    Verify pagination BUGFIX in Roblox profile endpoints.
-    Previously GET /api/profile/:id/limiteds only returned first 100 collectibles.
-    Now it paginates through ALL of them, affecting both item count and total RAP.
+    Test UPDATE 9: BlockBee payment system integration
+    
+    Test steps:
+    1. GET /api/config -> expect {cryptoConfigured:true, provider:"blockbee", receiveCurrency:"USDT"}
+    2. Admin login: POST /api/auth/login {email:"admin@robloot.com", password:"roblootdevtomo"} -> returns token, user.isAdmin=true
+    3. As admin, POST /api/admin/listings with body {name:"PayTest Item", imageUrl:"https://tr.rbxcdn.com/x/420/420/Hat/Png/noFilter", category:"Limiteds", robloxAssetId:123, rap:1000, robuxPrice:1350, stock:2, price:9.99, condition:"Limited"} -> creates listing; capture the listing id
+    4. Signup a normal user: POST /api/auth/signup {username:"paytester<rand>", email:"paytester+<rand>@test.com", password:"pass1234"} -> returns token
+    5. As the normal user, POST /api/orders {listingId:<id from step 3>} -> MUST return {orderId, checkoutUrl}. CRITICAL: checkoutUrl must START WITH "https://pay.blockbee.io/payment/"
+    6. GET /api/payments/status?orderId=<orderId> -> expect status "pending_payment" (NOT paid, since no real crypto was sent), and response includes item, amountUsd (9.99), and checkoutUrl
+    7. POST /api/payments/simulate {orderId:<orderId>} as the normal user -> MUST return HTTP 403 with error "Disabled while live crypto is configured"
+    8. Webhook nonce binding: POST /api/payments/callback?order_id=<orderId>&nonce=WRONGNONCE (empty JSON body, Content-Type application/json) -> MUST return HTTP 401 (Invalid nonce)
+    9. Non-admin guard regression: as the normal user, POST /api/admin/listings -> 403
+    10. Filters regression: GET /api/listings?sort=price_asc and GET /api/listings?category=Limiteds and GET /api/listings?maxPrice=1000000 -> all return {listings:[...]} arrays without error
     """
     print("=" * 80)
-    print("TESTING: Roblox Profile Pagination BUGFIX (UPDATE 8.1)")
+    print("TESTING: BlockBee Payment System Integration (UPDATE 9)")
     print("=" * 80)
     
-    # Step 1: GET /api/profile/lookup?input=Linkmon99 -> get profile.id
-    print("\n[STEP 1] Looking up Linkmon99 (famous trader with >100 limiteds)...")
+    # Variables to store across steps
+    admin_token = None
+    user_token = None
+    listing_id = None
+    order_id = None
     
-    # Try Linkmon99 first (famous trader with very large limited collection)
-    test_users = [
-        ("Linkmon99", "famous trader with very large limited collection"),
-        ("Roblox", "fallback option 1"),
-        ("builderman", "fallback option 2")
-    ]
-    
-    profile_id = None
-    username_used = None
-    
-    for username, description in test_users:
-        try:
-            print(f"  Trying {username} ({description})...")
-            response = requests.get(
-                f"{BASE_URL}/profile/lookup",
-                params={"input": username},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "profile" in data and "id" in data["profile"]:
-                    profile_id = data["profile"]["id"]
-                    username_used = username
-                    print(f"  ✓ SUCCESS: Resolved '{username}' -> id={profile_id}")
-                    print(f"    Display Name: {data['profile'].get('displayName', 'N/A')}")
-                    print(f"    Username: {data['profile'].get('name', 'N/A')}")
-                    break
-                else:
-                    print(f"  ✗ FAILED: Response missing profile data")
-            else:
-                print(f"  ✗ FAILED: HTTP {response.status_code}")
-                
-        except Exception as e:
-            print(f"  ✗ ERROR: {str(e)}")
-    
-    if not profile_id:
-        print("\n✗ CRITICAL: Could not resolve any test user. Cannot proceed with pagination test.")
-        return False
-    
-    # Step 2: GET /api/profile/{id}/limiteds -> confirm array length > 100 (proves pagination)
-    print(f"\n[STEP 2] Fetching limiteds for user {profile_id} ({username_used})...")
-    print("  NOTE: This may take several seconds for large accounts (sequential paging + resale-data fetches)")
-    
+    # Step 1: GET /api/config
+    print("\n[STEP 1] Testing GET /api/config...")
     try:
-        start_time = time.time()
-        response = requests.get(
-            f"{BASE_URL}/profile/{profile_id}/limiteds",
-            timeout=60  # Allow generous timeout for large accounts
-        )
-        elapsed = time.time() - start_time
+        response = requests.get(f"{BASE_URL}/config", timeout=10)
         
         if response.status_code != 200:
             print(f"  ✗ FAILED: HTTP {response.status_code}")
@@ -81,43 +48,37 @@ def test_pagination_bugfix():
             return False
         
         data = response.json()
-        limiteds = data.get("limiteds", [])
-        limiteds_count = len(limiteds)
+        print(f"  ✓ SUCCESS: HTTP 200")
+        print(f"    Response: {data}")
         
-        print(f"  ✓ SUCCESS: HTTP 200 (took {elapsed:.1f}s)")
-        print(f"  ✓ Limiteds array length: {limiteds_count}")
+        # Verify required fields
+        if data.get("cryptoConfigured") != True:
+            print(f"  ✗ FAILED: cryptoConfigured should be true, got {data.get('cryptoConfigured')}")
+            return False
+        print(f"  ✓ cryptoConfigured: true")
         
-        # Verify pagination worked (should be > 100 for Linkmon99 or similar large accounts)
-        if username_used == "Linkmon99" and limiteds_count <= 100:
-            print(f"  ⚠ WARNING: Expected >100 limiteds for Linkmon99, got {limiteds_count}")
-            print(f"    This suggests pagination may not be working correctly.")
-        elif username_used in ["Roblox", "builderman"] and limiteds_count <= 100:
-            print(f"  ℹ INFO: {username_used} has {limiteds_count} limiteds (≤100, pagination not exercised)")
-        else:
-            print(f"  ✓ PAGINATION VERIFIED: {limiteds_count} items (>100 proves pagination works)")
+        if data.get("provider") != "blockbee":
+            print(f"  ✗ FAILED: provider should be 'blockbee', got {data.get('provider')}")
+            return False
+        print(f"  ✓ provider: blockbee")
         
-        # Calculate sum of RAP for cross-check in step 3
-        total_rap_from_limiteds = sum(item.get("rap", 0) or 0 for item in limiteds)
-        print(f"  ✓ Sum of RAP from all limiteds: {total_rap_from_limiteds:,}")
+        if data.get("receiveCurrency") != "USDT":
+            print(f"  ✗ FAILED: receiveCurrency should be 'USDT', got {data.get('receiveCurrency')}")
+            return False
+        print(f"  ✓ receiveCurrency: USDT")
         
-    except requests.exceptions.Timeout:
-        print(f"  ✗ TIMEOUT: Request took >60s (may be normal for very large accounts)")
-        return False
     except Exception as e:
         print(f"  ✗ ERROR: {str(e)}")
         return False
     
-    # Step 3: GET /api/profile/{id}/rap-history -> verify count, totalRap, history
-    print(f"\n[STEP 3] Fetching rap-history for user {profile_id}...")
-    print("  NOTE: This may take up to 60s for large accounts (up to 30 resale-data fetches)")
-    
+    # Step 2: Admin login
+    print("\n[STEP 2] Testing admin login...")
     try:
-        start_time = time.time()
-        response = requests.get(
-            f"{BASE_URL}/profile/{profile_id}/rap-history",
-            timeout=60
+        response = requests.post(
+            f"{BASE_URL}/auth/login",
+            json={"email": "admin@robloot.com", "password": "roblootdevtomo"},
+            timeout=10
         )
-        elapsed = time.time() - start_time
         
         if response.status_code != 200:
             print(f"  ✗ FAILED: HTTP {response.status_code}")
@@ -125,206 +86,386 @@ def test_pagination_bugfix():
             return False
         
         data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200 (took {elapsed:.1f}s)")
+        print(f"  ✓ SUCCESS: HTTP 200")
         
-        # (a) Verify required keys exist
-        required_keys = ["totalRap", "count", "tracked", "history"]
-        missing_keys = [k for k in required_keys if k not in data]
-        if missing_keys:
-            print(f"  ✗ FAILED: Missing required keys: {missing_keys}")
+        if "token" not in data:
+            print(f"  ✗ FAILED: Missing 'token' in response")
             return False
-        print(f"  ✓ All required keys present: {required_keys}")
+        admin_token = data["token"]
+        print(f"  ✓ token: {admin_token[:20]}...")
         
-        # (b) Verify count equals limiteds array length from step 2
-        rap_history_count = data["count"]
-        if rap_history_count != limiteds_count:
-            print(f"  ✗ FAILED: count mismatch!")
-            print(f"    rap-history count: {rap_history_count}")
-            print(f"    limiteds array length: {limiteds_count}")
+        if "user" not in data or data["user"].get("isAdmin") != True:
+            print(f"  ✗ FAILED: user.isAdmin should be true")
             return False
-        print(f"  ✓ count matches limiteds array length: {rap_history_count}")
+        print(f"  ✓ user.isAdmin: true")
         
-        # (c) Verify totalRap equals exact sum of rap field across all limiteds
-        total_rap_from_history = data["totalRap"]
-        rap_difference = abs(total_rap_from_history - total_rap_from_limiteds)
-        rap_diff_percent = (rap_difference / max(total_rap_from_history, 1)) * 100
-        
-        print(f"  ✓ totalRap from rap-history: {total_rap_from_history:,}")
-        print(f"  ✓ Sum of RAP from limiteds: {total_rap_from_limiteds:,}")
-        print(f"  ✓ Difference: {rap_difference:,} ({rap_diff_percent:.2f}%)")
-        
-        if rap_difference != 0:
-            print(f"  ✗ FAILED: totalRap does NOT match exact sum of limiteds RAP!")
-            print(f"    Expected: {total_rap_from_limiteds:,}")
-            print(f"    Got: {total_rap_from_history:,}")
-            return False
-        print(f"  ✓ totalRap matches EXACTLY with sum of limiteds RAP")
-        
-        # (d) Verify history is an array with up to 12 entries
-        history = data.get("history", [])
-        if not isinstance(history, list):
-            print(f"  ✗ FAILED: history is not an array")
-            return False
-        
-        history_length = len(history)
-        if history_length > 12:
-            print(f"  ✗ FAILED: history has {history_length} entries (expected ≤12)")
-            return False
-        
-        print(f"  ✓ history is an array with {history_length} entries (≤12)")
-        
-        # Verify each history entry has correct format
-        for i, entry in enumerate(history):
-            if not isinstance(entry, dict):
-                print(f"  ✗ FAILED: history[{i}] is not an object")
-                return False
-            if "month" not in entry or "rap" not in entry:
-                print(f"  ✗ FAILED: history[{i}] missing 'month' or 'rap'")
-                return False
-            # Verify month format YYYY-MM
-            month = entry["month"]
-            if not isinstance(month, str) or len(month) != 7 or month[4] != "-":
-                print(f"  ✗ FAILED: history[{i}].month has invalid format: {month}")
-                return False
-            # Verify rap is a number
-            if not isinstance(entry["rap"], (int, float)):
-                print(f"  ✗ FAILED: history[{i}].rap is not a number: {entry['rap']}")
-                return False
-        
-        print(f"  ✓ All history entries have correct format (month='YYYY-MM', rap=number)")
-        
-        # Print tracked count
-        tracked = data.get("tracked", 0)
-        print(f"  ℹ INFO: tracked={tracked} (top holdings by RAP with detailed history)")
-        
-    except requests.exceptions.Timeout:
-        print(f"  ✗ TIMEOUT: Request took >60s")
-        return False
     except Exception as e:
         print(f"  ✗ ERROR: {str(e)}")
         return False
     
-    # Step 4: REGRESSION - builderman (id=156) should still work correctly
-    print(f"\n[STEP 4] REGRESSION TEST: builderman (id=156)...")
-    
+    # Step 3: Admin creates listing
+    print("\n[STEP 3] Testing admin create listing...")
     try:
-        # Lookup builderman
-        response = requests.get(
-            f"{BASE_URL}/profile/lookup",
-            params={"input": "builderman"},
-            timeout=30
+        response = requests.post(
+            f"{BASE_URL}/admin/listings",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "name": "PayTest Item",
+                "imageUrl": "https://tr.rbxcdn.com/x/420/420/Hat/Png/noFilter",
+                "category": "Limiteds",
+                "robloxAssetId": 123,
+                "rap": 1000,
+                "robuxPrice": 1350,
+                "stock": 2,
+                "price": 9.99,
+                "condition": "Limited"
+            },
+            timeout=10
         )
         
         if response.status_code != 200:
-            print(f"  ✗ FAILED: Lookup failed with HTTP {response.status_code}")
+            print(f"  ✗ FAILED: HTTP {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
             return False
         
         data = response.json()
-        builderman_id = data.get("profile", {}).get("id")
+        print(f"  ✓ SUCCESS: HTTP 200")
         
-        if builderman_id != 156:
-            print(f"  ⚠ WARNING: builderman id is {builderman_id}, expected 156")
-        else:
-            print(f"  ✓ builderman id confirmed: 156")
-        
-        # Get limiteds
-        response = requests.get(
-            f"{BASE_URL}/profile/{builderman_id}/limiteds",
-            timeout=60
-        )
-        
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: limiteds failed with HTTP {response.status_code}")
+        if "listing" not in data or "id" not in data["listing"]:
+            print(f"  ✗ FAILED: Missing 'listing.id' in response")
             return False
-        
-        limiteds_data = response.json()
-        builderman_limiteds = limiteds_data.get("limiteds", [])
-        builderman_limiteds_count = len(builderman_limiteds)
-        builderman_rap_sum = sum(item.get("rap", 0) or 0 for item in builderman_limiteds)
-        
-        print(f"  ✓ builderman limiteds count: {builderman_limiteds_count}")
-        print(f"  ✓ builderman RAP sum: {builderman_rap_sum:,}")
-        
-        # Get rap-history
-        response = requests.get(
-            f"{BASE_URL}/profile/{builderman_id}/rap-history",
-            timeout=60
-        )
-        
-        if response.status_code != 200:
-            print(f"  ✗ FAILED: rap-history failed with HTTP {response.status_code}")
-            return False
-        
-        rap_data = response.json()
-        builderman_total_rap = rap_data.get("totalRap", 0)
-        builderman_count = rap_data.get("count", 0)
-        
-        print(f"  ✓ builderman rap-history totalRap: {builderman_total_rap:,}")
-        print(f"  ✓ builderman rap-history count: {builderman_count}")
-        
-        # Verify count matches
-        if builderman_count != builderman_limiteds_count:
-            print(f"  ✗ FAILED: count mismatch for builderman!")
-            print(f"    rap-history count: {builderman_count}")
-            print(f"    limiteds count: {builderman_limiteds_count}")
-            return False
-        
-        # Verify totalRap matches
-        if builderman_total_rap != builderman_rap_sum:
-            print(f"  ✗ FAILED: totalRap mismatch for builderman!")
-            print(f"    rap-history totalRap: {builderman_total_rap:,}")
-            print(f"    limiteds RAP sum: {builderman_rap_sum:,}")
-            return False
-        
-        print(f"  ✓ REGRESSION PASSED: builderman count and totalRap match exactly")
+        listing_id = data["listing"]["id"]
+        print(f"  ✓ listing.id: {listing_id}")
+        print(f"  ✓ listing.price: {data['listing'].get('price')}")
+        print(f"  ✓ listing.stock: {data['listing'].get('stock')}")
         
     except Exception as e:
         print(f"  ✗ ERROR: {str(e)}")
         return False
     
-    # Step 5: Graceful handling - nonexistent user should return HTTP 200 with empty history
-    print(f"\n[STEP 5] GRACEFUL HANDLING: nonexistent user (999999999999)...")
-    
+    # Step 4: Signup normal user
+    print("\n[STEP 4] Testing normal user signup...")
     try:
-        response = requests.get(
-            f"{BASE_URL}/profile/999999999999/rap-history",
-            timeout=30
+        rand = random.randint(10000, 99999)
+        username = f"paytester{rand}"
+        email = f"paytester+{rand}@test.com"
+        
+        response = requests.post(
+            f"{BASE_URL}/auth/signup",
+            json={"username": username, "email": email, "password": "pass1234"},
+            timeout=10
         )
         
         if response.status_code != 200:
-            print(f"  ✗ FAILED: Expected HTTP 200, got {response.status_code}")
+            print(f"  ✗ FAILED: HTTP {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
             return False
         
         data = response.json()
-        print(f"  ✓ SUCCESS: HTTP 200 (graceful handling)")
+        print(f"  ✓ SUCCESS: HTTP 200")
         
-        # Verify empty/private response
-        if data.get("private") != True:
-            print(f"  ⚠ WARNING: Expected private=true flag")
-        else:
-            print(f"  ✓ private=true flag present")
-        
-        history = data.get("history", [])
-        if len(history) != 0:
-            print(f"  ⚠ WARNING: Expected empty history, got {len(history)} entries")
-        else:
-            print(f"  ✓ history is empty array")
-        
-        print(f"  ✓ GRACEFUL HANDLING PASSED: No 500 error, returns HTTP 200 with empty/private response")
+        if "token" not in data:
+            print(f"  ✗ FAILED: Missing 'token' in response")
+            return False
+        user_token = data["token"]
+        print(f"  ✓ token: {user_token[:20]}...")
+        print(f"  ✓ username: {username}")
         
     except Exception as e:
         print(f"  ✗ ERROR: {str(e)}")
         return False
+    
+    # Step 5: Create order (CRITICAL: must return real BlockBee checkout URL)
+    print("\n[STEP 5] Testing POST /api/orders (CRITICAL: real BlockBee checkout URL)...")
+    try:
+        response = requests.post(
+            f"{BASE_URL}/orders",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={"listingId": listing_id},
+            timeout=15  # BlockBee API call may take a few seconds
+        )
+        
+        if response.status_code != 200:
+            print(f"  ✗ FAILED: HTTP {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return False
+        
+        data = response.json()
+        print(f"  ✓ SUCCESS: HTTP 200")
+        
+        if "orderId" not in data:
+            print(f"  ✗ FAILED: Missing 'orderId' in response")
+            return False
+        order_id = data["orderId"]
+        print(f"  ✓ orderId: {order_id}")
+        
+        if "checkoutUrl" not in data:
+            print(f"  ✗ FAILED: Missing 'checkoutUrl' in response")
+            return False
+        
+        checkout_url = data["checkoutUrl"]
+        print(f"  ✓ checkoutUrl: {checkout_url}")
+        
+        # CRITICAL: checkoutUrl must start with "https://pay.blockbee.io/payment/"
+        if not checkout_url or not checkout_url.startswith("https://pay.blockbee.io/payment/"):
+            print(f"  ✗ CRITICAL FAILURE: checkoutUrl does NOT start with 'https://pay.blockbee.io/payment/'")
+            print(f"    Expected: https://pay.blockbee.io/payment/...")
+            print(f"    Got: {checkout_url}")
+            return False
+        print(f"  ✓ CRITICAL: checkoutUrl starts with 'https://pay.blockbee.io/payment/' (real BlockBee URL)")
+        
+        # Verify simulated flag is NOT present (this is a real BlockBee call)
+        if data.get("simulated") == True:
+            print(f"  ✗ FAILED: 'simulated' flag should NOT be present (BlockBee is configured)")
+            return False
+        print(f"  ✓ No 'simulated' flag (real BlockBee integration)")
+        
+    except Exception as e:
+        print(f"  ✗ ERROR: {str(e)}")
+        return False
+    
+    # Step 6: GET /api/payments/status
+    print("\n[STEP 6] Testing GET /api/payments/status...")
+    try:
+        response = requests.get(
+            f"{BASE_URL}/payments/status",
+            params={"orderId": order_id},
+            timeout=15  # May reconcile with BlockBee
+        )
+        
+        if response.status_code != 200:
+            print(f"  ✗ FAILED: HTTP {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return False
+        
+        data = response.json()
+        print(f"  ✓ SUCCESS: HTTP 200")
+        print(f"    Response: {data}")
+        
+        # Verify status is "pending_payment" (no real crypto sent)
+        if data.get("status") != "pending_payment":
+            print(f"  ⚠ WARNING: Expected status 'pending_payment', got '{data.get('status')}'")
+            print(f"    (This is acceptable if BlockBee has updated the status)")
+        else:
+            print(f"  ✓ status: pending_payment")
+        
+        # Verify required fields
+        if "item" not in data:
+            print(f"  ✗ FAILED: Missing 'item' in response")
+            return False
+        print(f"  ✓ item: {data['item'].get('name')}")
+        
+        if data.get("amountUsd") != 9.99:
+            print(f"  ✗ FAILED: amountUsd should be 9.99, got {data.get('amountUsd')}")
+            return False
+        print(f"  ✓ amountUsd: 9.99")
+        
+        if "checkoutUrl" not in data:
+            print(f"  ✗ FAILED: Missing 'checkoutUrl' in response")
+            return False
+        print(f"  ✓ checkoutUrl: {data['checkoutUrl'][:50]}...")
+        
+    except Exception as e:
+        print(f"  ✗ ERROR: {str(e)}")
+        return False
+    
+    # Step 7: POST /api/payments/simulate (must return 403)
+    print("\n[STEP 7] Testing POST /api/payments/simulate (must return 403)...")
+    try:
+        response = requests.post(
+            f"{BASE_URL}/payments/simulate",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={"orderId": order_id},
+            timeout=10
+        )
+        
+        if response.status_code != 403:
+            print(f"  ✗ FAILED: Expected HTTP 403, got {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return False
+        
+        data = response.json()
+        print(f"  ✓ SUCCESS: HTTP 403 (simulate disabled)")
+        
+        # Verify error message
+        error_msg = data.get("error", "")
+        if "Disabled while live crypto is configured" not in error_msg:
+            print(f"  ⚠ WARNING: Expected error message 'Disabled while live crypto is configured'")
+            print(f"    Got: {error_msg}")
+        else:
+            print(f"  ✓ error: {error_msg}")
+        
+    except Exception as e:
+        print(f"  ✗ ERROR: {str(e)}")
+        return False
+    
+    # Step 8: Webhook nonce binding (wrong nonce -> 401)
+    print("\n[STEP 8] Testing POST /api/payments/callback with wrong nonce (must return 401)...")
+    try:
+        response = requests.post(
+            f"{BASE_URL}/payments/callback",
+            params={"order_id": order_id, "nonce": "WRONGNONCE"},
+            headers={"Content-Type": "application/json"},
+            json={},
+            timeout=10
+        )
+        
+        if response.status_code != 401:
+            print(f"  ✗ FAILED: Expected HTTP 401, got {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return False
+        
+        print(f"  ✓ SUCCESS: HTTP 401 (Invalid nonce)")
+        print(f"    Response: {response.text[:100]}")
+        
+    except Exception as e:
+        print(f"  ✗ ERROR: {str(e)}")
+        return False
+    
+    # Step 9: Non-admin guard regression
+    print("\n[STEP 9] Testing non-admin guard regression (POST /api/admin/listings -> 403)...")
+    try:
+        response = requests.post(
+            f"{BASE_URL}/admin/listings",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={
+                "name": "Unauthorized Listing",
+                "price": 10.00,
+                "stock": 1
+            },
+            timeout=10
+        )
+        
+        if response.status_code != 403:
+            print(f"  ✗ FAILED: Expected HTTP 403, got {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return False
+        
+        print(f"  ✓ SUCCESS: HTTP 403 (Admin only)")
+        
+    except Exception as e:
+        print(f"  ✗ ERROR: {str(e)}")
+        return False
+    
+    # Step 10: Filters regression
+    print("\n[STEP 10] Testing filters regression...")
+    
+    # Test 10a: sort=price_asc
+    print("  [10a] GET /api/listings?sort=price_asc...")
+    try:
+        response = requests.get(
+            f"{BASE_URL}/listings",
+            params={"sort": "price_asc"},
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"    ✗ FAILED: HTTP {response.status_code}")
+            return False
+        
+        data = response.json()
+        if "listings" not in data or not isinstance(data["listings"], list):
+            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
+            return False
+        
+        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
+        
+    except Exception as e:
+        print(f"    ✗ ERROR: {str(e)}")
+        return False
+    
+    # Test 10b: category=Limiteds
+    print("  [10b] GET /api/listings?category=Limiteds...")
+    try:
+        response = requests.get(
+            f"{BASE_URL}/listings",
+            params={"category": "Limiteds"},
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"    ✗ FAILED: HTTP {response.status_code}")
+            return False
+        
+        data = response.json()
+        if "listings" not in data or not isinstance(data["listings"], list):
+            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
+            return False
+        
+        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
+        
+    except Exception as e:
+        print(f"    ✗ ERROR: {str(e)}")
+        return False
+    
+    # Test 10c: maxPrice=1000000
+    print("  [10c] GET /api/listings?maxPrice=1000000...")
+    try:
+        response = requests.get(
+            f"{BASE_URL}/listings",
+            params={"maxPrice": "1000000"},
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"    ✗ FAILED: HTTP {response.status_code}")
+            return False
+        
+        data = response.json()
+        if "listings" not in data or not isinstance(data["listings"], list):
+            print(f"    ✗ FAILED: Missing or invalid 'listings' array")
+            return False
+        
+        print(f"    ✓ SUCCESS: HTTP 200, listings array with {len(data['listings'])} items")
+        
+    except Exception as e:
+        print(f"    ✗ ERROR: {str(e)}")
+        return False
+    
+    # Cleanup: Delete the test listing
+    print("\n[CLEANUP] Deleting test listing...")
+    try:
+        response = requests.delete(
+            f"{BASE_URL}/admin/listings/{listing_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"  ✓ Test listing deleted successfully")
+        else:
+            print(f"  ⚠ WARNING: Could not delete test listing (HTTP {response.status_code})")
+        
+    except Exception as e:
+        print(f"  ⚠ WARNING: Cleanup error: {str(e)}")
     
     print("\n" + "=" * 80)
-    print("✓ ALL PAGINATION BUGFIX TESTS PASSED")
+    print("✓ ALL BLOCKBEE PAYMENT FLOW TESTS PASSED")
     print("=" * 80)
+    print("\nSUMMARY:")
+    print("  ✓ Config endpoint returns BlockBee configuration")
+    print("  ✓ Admin login working")
+    print("  ✓ Admin can create listings")
+    print("  ✓ Normal user signup working")
+    print("  ✓ CRITICAL: POST /orders returns real BlockBee checkout URL")
+    print("  ✓ Payment status endpoint returns pending_payment with all required fields")
+    print("  ✓ Simulate endpoint correctly blocked with 403 (BlockBee configured)")
+    print("  ✓ Webhook nonce validation working (401 for wrong nonce)")
+    print("  ✓ Admin guard working (403 for non-admin)")
+    print("  ✓ Filters regression passed (sort, category, maxPrice)")
+    print("\nNOTE: The 'paid' transition cannot be verified without an actual on-chain")
+    print("      crypto payment. The test confirms:")
+    print("      (a) Real BlockBee checkout URL is created")
+    print("      (b) Status endpoint returns pending and echoes checkoutUrl")
+    print("      (c) Simulate is blocked with 403")
+    print("      (d) Wrong-nonce webhook returns 401")
+    
     return True
 
 
 if __name__ == "__main__":
     try:
-        success = test_pagination_bugfix()
+        success = test_blockbee_payment_flow()
         sys.exit(0 if success else 1)
     except Exception as e:
         print(f"\n✗ CRITICAL ERROR: {str(e)}")

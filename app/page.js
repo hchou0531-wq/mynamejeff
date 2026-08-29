@@ -916,7 +916,7 @@ function AdminView({ api, user, go, cfg }) {
           <Button className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold" onClick={() => setImportOpen(true)}><Plus className="w-4 h-4 mr-1" /> Import from Roblox</Button>
         </div>
       </div>
-      {!cfg?.cryptoConfigured && <div className="mb-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center gap-2"><Bitcoin className="w-4 h-4" /> Crypto checkout is in DEMO mode. Add your CoinGate API token to <code className="mx-1">COINGATE_API_TOKEN</code> in the server env to accept real payments.</div>}
+      {!cfg?.cryptoConfigured && <div className="mb-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center gap-2"><Bitcoin className="w-4 h-4" /> Crypto checkout is in DEMO mode. Add your BlockBee API key to <code className="mx-1">BLOCKBEE_API_KEY</code> in the server env to accept real payments.</div>}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-8">
         {stats && [['Users', stats.users], ['Items', stats.items], ['Listings', stats.listings], ['Orders', stats.orders], ['Revenue', usd(stats.revenue)], ['Reports', stats.reports]].map(([k, v]) => (
           <Card key={k} className="p-4 bg-[#12101f]/60 border-white/5"><p className="text-xs uppercase text-slate-400 font-bold">{k}</p><p className="text-2xl font-black text-violet-300">{v}</p></Card>

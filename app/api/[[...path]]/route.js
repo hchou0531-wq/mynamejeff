@@ -48,42 +48,65 @@ async function fulfillListing(db, listingId) {
   }
 }
 
-// ---------------- CoinGate ----------------
-function coingateBase() {
-  return process.env.COINGATE_ENV === 'live' ? 'https://api.coingate.com/api/v2' : 'https://api-sandbox.coingate.com/api/v2'
-}
-function coingateConfigured() { return !!(process.env.COINGATE_API_TOKEN && process.env.COINGATE_API_TOKEN.trim()) }
+// ---------------- BlockBee (crypto payments) ----------------
+const BLOCKBEE_API = 'https://api.blockbee.io'
+function blockbeeConfigured() { return !!(process.env.BLOCKBEE_API_KEY && process.env.BLOCKBEE_API_KEY.trim()) }
 
-async function coingateCreateOrder(order, listing) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL
-  const payload = {
-    order_id: order.orderId,
-    price_amount: Number(listing.price).toFixed(2),
-    price_currency: 'USD',
-    receive_currency: process.env.COINGATE_RECEIVE_CURRENCY || 'USDT',
-    title: listing.item.name,
-    description: `Purchase of ${listing.item.name} on Robloot`,
-    callback_url: `${base}/api/payments/callback`,
-    cancel_url: `${base}/?payment=cancel&orderId=${order.orderId}`,
-    success_url: `${base}/?payment=success&orderId=${order.orderId}`
+async function blockbeeGet(path, params = {}) {
+  const url = new URL(`${BLOCKBEE_API}${path}`)
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
   }
-  const res = await fetch(`${coingateBase()}/orders`, {
-    method: 'POST',
-    headers: { Authorization: `Token ${process.env.COINGATE_API_TOKEN}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload)
+  const res = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { apikey: process.env.BLOCKBEE_API_KEY, Accept: 'application/json' },
+    cache: 'no-store'
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.message || data.reason || `CoinGate HTTP ${res.status}`)
-  return data // { id, status, payment_url, token, order_id, ... }
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || data.error || `BlockBee HTTP ${res.status}`)
+  }
+  return data
 }
 
-async function coingateGetOrder(coingateId) {
-  const res = await fetch(`${coingateBase()}/orders/${coingateId}`, {
-    headers: { Authorization: `Token ${process.env.COINGATE_API_TOKEN}`, Accept: 'application/json' }
+// Hosted checkout: returns { payment_id, payment_url }
+async function blockbeeCreateCheckout(order, listing) {
+  const base = process.env.NEXT_PUBLIC_BASE_URL
+  const notify = `${base}/api/payments/callback?order_id=${encodeURIComponent(order.orderId)}&nonce=${encodeURIComponent(order.nonce)}`
+  const redirect = `${base}/?payment=success&orderId=${encodeURIComponent(order.orderId)}`
+  return blockbeeGet('/checkout/request/', {
+    value: Number(listing.price).toFixed(2),
+    currency: 'usd',
+    item_description: `Purchase of ${listing.item.name} on Robloot`,
+    notify_url: notify,
+    redirect_url: redirect,
+    post: 1,
+    json: 1
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.message || `CoinGate HTTP ${res.status}`)
-  return data
+}
+
+// Authoritative status check (server-to-server): returns { is_paid, is_pending, is_expired, ... }
+async function blockbeeGetLogs(paymentId) {
+  return blockbeeGet('/checkout/logs/', { token: paymentId })
+}
+
+// Checks BlockBee for an order's real payment state and fulfills if paid. Returns updated status.
+async function reconcileBlockbeeOrder(db, order) {
+  if (!order || order.status === 'paid' || !order.blockbeePaymentId || !blockbeeConfigured()) return order?.status
+  try {
+    const logs = await blockbeeGetLogs(order.blockbeePaymentId)
+    const paid = String(logs.is_paid) === '1' || logs.is_paid === 1 || logs.is_paid === true
+    if (paid) {
+      const r = await db.collection('orders').updateOne({ orderId: order.orderId, status: { $ne: 'paid' } }, { $set: { status: 'paid', paidAt: new Date() } })
+      if (r.modifiedCount > 0) {
+        await fulfillListing(db, order.listingId)
+        await notify(db, order.buyerId, `Payment confirmed! You now own ${order.item.name}.`, 'success')
+      }
+      return 'paid'
+    }
+    if (logs.is_expired) { await db.collection('orders').updateOne({ orderId: order.orderId, status: { $ne: 'paid' } }, { $set: { status: 'expired' } }); return 'expired' }
+  } catch (e) { /* transient; keep current status */ }
+  return order.status
 }
 
 // ---------------- Roblox lookup ----------------
@@ -374,7 +397,7 @@ async function handleRoute(request, { params }) {
 
     if (route === '/' || route === '/root') return json({ message: 'Robloot Marketplace API' })
     if (route === '/seed' && method === 'POST') return json(await doSeed(db, true))
-    if (route === '/config' && method === 'GET') return json({ cryptoConfigured: coingateConfigured(), receiveCurrency: process.env.COINGATE_RECEIVE_CURRENCY || 'USDT' })
+    if (route === '/config' && method === 'GET') return json({ cryptoConfigured: blockbeeConfigured(), provider: 'blockbee', receiveCurrency: process.env.BLOCKBEE_RECEIVE_CURRENCY || 'USDT' })
 
     // ---------- ROBLOX PROFILES (public) ----------
     if (route === '/profile/lookup' && method === 'GET') {
@@ -491,19 +514,19 @@ async function handleRoute(request, { params }) {
       const order = {
         id: uuidv4(), orderId: `ord_${uuidv4()}`, listingId: listing.id, item: listing.item,
         buyerId: user.id, buyerName: user.username, sellerName: listing.sellerName,
-        amountUsd: listing.price, currency: process.env.COINGATE_RECEIVE_CURRENCY || 'USDT',
-        provider: 'coingate', status: 'pending_payment', checkoutUrl: null,
-        coingateId: null, coingateToken: null, createdAt: new Date(), paidAt: null
+        amountUsd: listing.price, currency: 'USD',
+        provider: 'blockbee', status: 'pending_payment', checkoutUrl: null,
+        nonce: uuidv4(), blockbeePaymentId: null, createdAt: new Date(), paidAt: null
       }
       await db.collection('orders').insertOne(order)
-      if (!coingateConfigured()) {
-        // Demo mode: no live token yet. Return order so client can complete a simulated payment.
+      if (!blockbeeConfigured()) {
+        // Demo mode: no API key. Return order so client can complete a simulated payment.
         return json({ orderId: order.orderId, checkoutUrl: null, simulated: true })
       }
       try {
-        const cg = await coingateCreateOrder(order, listing)
-        await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { coingateId: String(cg.id), coingateToken: cg.token || null, checkoutUrl: cg.payment_url } })
-        return json({ orderId: order.orderId, checkoutUrl: cg.payment_url })
+        const bb = await blockbeeCreateCheckout(order, listing)
+        await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { blockbeePaymentId: String(bb.payment_id), checkoutUrl: bb.payment_url } })
+        return json({ orderId: order.orderId, checkoutUrl: bb.payment_url })
       } catch (e) {
         await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { status: 'failed', error: e.message } })
         return json({ error: `Could not create crypto checkout: ${e.message}` }, 502)
@@ -521,45 +544,44 @@ async function handleRoute(request, { params }) {
     if (route === '/payments/status' && method === 'GET') {
       const orderId = q.get('orderId')
       if (!orderId) return json({ error: 'orderId required' }, 400)
-      const order = await db.collection('orders').findOne({ orderId })
+      let order = await db.collection('orders').findOne({ orderId })
       if (!order) return json({ error: 'Not found' }, 404)
-      return json({ orderId, status: order.status, item: order.item, amountUsd: order.amountUsd })
+      // Reconcile with BlockBee in case the webhook hasn't arrived yet
+      if (order.status === 'pending_payment') {
+        const s = await reconcileBlockbeeOrder(db, order)
+        if (s && s !== order.status) order = await db.collection('orders').findOne({ orderId })
+      }
+      return json({ orderId, status: order.status, item: order.item, amountUsd: order.amountUsd, checkoutUrl: order.checkoutUrl })
     }
 
     if (route === '/payments/callback' && method === 'POST') {
+      // BlockBee webhook. Custom params (order_id, nonce) are echoed in the query string.
+      const orderId = q.get('order_id') || q.get('orderId')
+      const nonce = q.get('nonce')
       let body = {}
       const ct = request.headers.get('content-type') || ''
       try {
         if (ct.includes('application/json')) body = await request.json()
         else { const fd = await request.formData(); fd.forEach((v, k) => { body[k] = v }) }
       } catch (e) { body = {} }
-      const orderId = body.order_id
-      if (!orderId) return json({ ok: true })
-      const order = await db.collection('orders').findOne({ orderId })
-      if (!order) return json({ ok: true })
-      // verify token echoed back matches the one CoinGate gave us
-      if (order.coingateToken && body.token && String(body.token) !== String(order.coingateToken)) {
-        return json({ error: 'Invalid token' }, 401)
+      const oid = orderId || body.order_id
+      if (!oid) return new Response('*ok*', { status: 200 })
+      const order = await db.collection('orders').findOne({ orderId: oid })
+      if (!order) return new Response('*ok*', { status: 200 })
+      // Bind: nonce must match the one we generated for this order
+      if (order.nonce && nonce && String(nonce) !== String(order.nonce)) {
+        return new Response('Invalid nonce', { status: 401 })
       }
-      // confirm real status from CoinGate API
-      let status = body.status
-      try { if (order.coingateId) { const remote = await coingateGetOrder(order.coingateId); status = remote.status } } catch (e) {}
-      const s = String(status || '').toLowerCase()
-      const paid = s === 'paid'
-      const dead = ['invalid', 'expired', 'canceled', 'refunded'].includes(s)
-      if (paid && order.status !== 'paid') {
-        await db.collection('orders').updateOne({ orderId, status: { $ne: 'paid' } }, { $set: { status: 'paid', paidAt: new Date() } })
-        await fulfillListing(db, order.listingId)
-        await notify(db, order.buyerId, `Payment confirmed! You now own ${order.item.name}.`, 'success')
-      } else if (dead && order.status !== 'paid') {
-        await db.collection('orders').updateOne({ orderId }, { $set: { status: s } })
+      // Authoritative confirmation: re-fetch payment state from BlockBee using our API key
+      if (order.status !== 'paid') {
+        await reconcileBlockbeeOrder(db, order)
       }
-      return json({ ok: true })
+      return new Response('*ok*', { status: 200, headers: { 'content-type': 'text/plain' } })
     }
 
     // dev/testing helper: mark an order paid without live provider (only when crypto NOT configured)
     if (route === '/payments/simulate' && method === 'POST') {
-      if (coingateConfigured()) return json({ error: 'Disabled while live crypto is configured' }, 403)
+      if (blockbeeConfigured()) return json({ error: 'Disabled while live crypto is configured' }, 403)
       const user = await getUser(request, db)
       if (!user) return json({ error: 'Unauthorized' }, 401)
       const b = await request.json()
