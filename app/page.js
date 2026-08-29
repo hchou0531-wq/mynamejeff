@@ -15,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
   Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
-  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote
+  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
@@ -1166,6 +1166,20 @@ function AdminView({ api, user, go, cfg }) {
   const genDash = useCallback(async () => { try { const d = await api('/admin/dashboard/session', { method: 'POST' }); setDash(d) } catch (e) {} }, [api])
   useEffect(() => { if (user?.isAdmin) genDash() }, [genDash, user])
 
+  // Import digital goods (accounts / toy codes) from the admin area
+  const [accOpen, setAccOpen] = useState(false)
+  const [tcOpen, setTcOpen] = useState(false)
+  const [accForm, setAccForm] = useState({ title: '', price: '', imageUrl: '', username: '', password: '', email: '', notes: '' })
+  const [tcForm, setTcForm] = useState({ title: '', price: '', imageUrl: '', code: '' })
+  const submitAccount = async () => {
+    if (!accForm.title.trim() || !accForm.username.trim() || !accForm.password.trim()) { toast.error('Title, username and password are required'); return }
+    try { await api('/admin/dashboard/accounts', { method: 'POST', body: JSON.stringify({ ...accForm, price: Number(accForm.price) || 0 }) }); toast.success('Account added to Dashboard → Profiles'); setAccOpen(false); setAccForm({ title: '', price: '', imageUrl: '', username: '', password: '', email: '', notes: '' }) } catch (e) { toast.error(e.message) }
+  }
+  const submitToycode = async () => {
+    if (!tcForm.title.trim() || !tcForm.code.trim()) { toast.error('Title and code are required'); return }
+    try { await api('/admin/dashboard/toycodes', { method: 'POST', body: JSON.stringify({ ...tcForm, price: Number(tcForm.price) || 0 }) }); toast.success('Toy code added to Dashboard → Toy Codes'); setTcOpen(false); setTcForm({ title: '', price: '', imageUrl: '', code: '' }) } catch (e) { toast.error(e.message) }
+  }
+
   const load = useCallback(async () => {
     try {
       const [s, i, v, l, o, u, r] = await Promise.all([api('/admin/stats'), api('/admin/items'), api('/admin/vendors'), api('/admin/listings'), api('/admin/orders'), api('/admin/users'), api('/admin/reports')])
@@ -1193,11 +1207,42 @@ function AdminView({ api, user, go, cfg }) {
     <div className="container mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <h1 className="text-3xl font-black flex items-center gap-2"><Shield className="w-7 h-7 text-fuchsia-400" /> Admin Console</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button variant="outline" className="border-white/10" onClick={() => setVendorOpen(true)}><Store className="w-4 h-4 mr-1" /> New Store</Button>
+          <Button variant="outline" className="border-white/10" onClick={() => setAccOpen(true)}><User className="w-4 h-4 mr-1" /> Import Account</Button>
+          <Button variant="outline" className="border-white/10" onClick={() => setTcOpen(true)}><Ticket className="w-4 h-4 mr-1" /> Import Toy Code</Button>
           <Button className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold" onClick={() => setImportOpen(true)}><Plus className="w-4 h-4 mr-1" /> Import from Roblox</Button>
         </div>
       </div>
+
+      <Dialog open={accOpen} onOpenChange={setAccOpen}>
+        <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><User className="w-5 h-5 text-violet-400" /> Import account for sale</DialogTitle><DialogDescription className="text-slate-400">Added to Discord Dashboard → Profiles. Delivered on /claim after you assign it to an order.</DialogDescription></DialogHeader>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Input value={accForm.title} onChange={e => setAccForm({ ...accForm, title: e.target.value })} placeholder="Title (e.g. OG 2015 Account)" className="bg-black/30 border-white/10 sm:col-span-2" />
+            <Input value={accForm.username} onChange={e => setAccForm({ ...accForm, username: e.target.value })} placeholder="Roblox username" className="bg-black/30 border-white/10" />
+            <Input value={accForm.password} onChange={e => setAccForm({ ...accForm, password: e.target.value })} placeholder="Password" className="bg-black/30 border-white/10" />
+            <Input value={accForm.email} onChange={e => setAccForm({ ...accForm, email: e.target.value })} placeholder="Email (optional)" className="bg-black/30 border-white/10" />
+            <Input value={accForm.price} onChange={e => setAccForm({ ...accForm, price: e.target.value })} placeholder="Price (USD)" type="number" className="bg-black/30 border-white/10" />
+            <Input value={accForm.imageUrl} onChange={e => setAccForm({ ...accForm, imageUrl: e.target.value })} placeholder="Image URL (optional)" className="bg-black/30 border-white/10 sm:col-span-2" />
+            <Textarea value={accForm.notes} onChange={e => setAccForm({ ...accForm, notes: e.target.value })} placeholder="Notes / extra login info (optional)" className="bg-black/30 border-white/10 sm:col-span-2" />
+          </div>
+          <DialogFooter><Button variant="ghost" onClick={() => setAccOpen(false)}>Cancel</Button><Button onClick={submitAccount} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Add account</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={tcOpen} onOpenChange={setTcOpen}>
+        <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Ticket className="w-5 h-5 text-fuchsia-400" /> Import Roblox toy code</DialogTitle><DialogDescription className="text-slate-400">Added to Discord Dashboard → Toy Codes. Delivered on /claim after you assign it to an order.</DialogDescription></DialogHeader>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Input value={tcForm.title} onChange={e => setTcForm({ ...tcForm, title: e.target.value })} placeholder="Title (e.g. Roblox Toy - Ninja)" className="bg-black/30 border-white/10 sm:col-span-2" />
+            <Input value={tcForm.code} onChange={e => setTcForm({ ...tcForm, code: e.target.value })} placeholder="Toy code (e.g. ABC-123-XYZ)" className="bg-black/30 border-white/10" />
+            <Input value={tcForm.price} onChange={e => setTcForm({ ...tcForm, price: e.target.value })} placeholder="Price (USD)" type="number" className="bg-black/30 border-white/10" />
+            <Input value={tcForm.imageUrl} onChange={e => setTcForm({ ...tcForm, imageUrl: e.target.value })} placeholder="Image URL (optional)" className="bg-black/30 border-white/10 sm:col-span-2" />
+          </div>
+          <DialogFooter><Button variant="ghost" onClick={() => setTcOpen(false)}>Cancel</Button><Button onClick={submitToycode} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Add toy code</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
       {!cfg?.cryptoConfigured && <div className="mb-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center gap-2"><Bitcoin className="w-4 h-4" /> Crypto checkout is in DEMO mode. Add your BlockBee API key to <code className="mx-1">BLOCKBEE_API_KEY</code> in the server env to accept real payments.</div>}
 
       {/* Secret Discord Dashboard access */}

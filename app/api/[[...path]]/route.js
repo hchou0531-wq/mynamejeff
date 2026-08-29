@@ -1,6 +1,7 @@
 import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
 import { NextResponse } from 'next/server'
+import crypto from 'crypto'
 
 // ---------------- MongoDB ----------------
 let clientPromise
@@ -341,6 +342,34 @@ async function fetchEbayFeedback(url) {
   }
   return { handle, feedbackScore, items }
 }
+
+// ---------------- Digital-goods claim + Discord webhook ----------------
+async function claimDeliverable(db, orderNumber, discordUserId) {
+  const on = String(orderNumber).trim()
+  const tc = await db.collection('toycodes').findOne({ claimOrderNumber: on, status: { $ne: 'claimed' } })
+  if (tc) {
+    await db.collection('toycodes').updateOne({ id: tc.id }, { $set: { status: 'claimed', claimedBy: discordUserId || null, claimedAt: new Date() } })
+    return { type: 'toycode', title: tc.title, code: tc.code }
+  }
+  const acc = await db.collection('accounts').findOne({ claimOrderNumber: on, status: { $ne: 'claimed' } })
+  if (acc) {
+    await db.collection('accounts').updateOne({ id: acc.id }, { $set: { status: 'claimed', claimedBy: discordUserId || null, claimedAt: new Date() } })
+    return { type: 'account', title: acc.title, credentials: acc.credentials }
+  }
+  return null
+}
+function verifyDiscordSig(publicKeyHex, signatureHex, timestamp, body) {
+  try {
+    const key = crypto.createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(publicKeyHex, 'hex')]), format: 'der', type: 'spki' })
+    return crypto.verify(null, Buffer.from(timestamp + body), key, Buffer.from(signatureHex, 'hex'))
+  } catch (e) { return false }
+}
+function claimMessage(d, orderNumber) {
+  if (!d) return `\u274c No claimable delivery found for order #${orderNumber}. Make sure it's paid and the order number is correct.`
+  if (d.type === 'toycode') return `\ud83c\udf9f\ufe0f **${d.title}**\nYour Roblox toy code: \`${d.code}\`\nRedeem it at https://www.roblox.com/redeem`
+  const c = d.credentials || {}
+  return `\ud83d\udc64 **${d.title}**\nUsername: \`${c.username}\`\nPassword: \`${c.password}\`${c.email ? `\nEmail: \`${c.email}\`` : ''}${c.notes ? `\nNotes: ${c.notes}` : ''}`
+}
 const REGULAR_TYPES = [[8, 'Hats'], [41, 'Hair'], [42, 'Face Accessories'], [43, 'Neck'], [44, 'Shoulder'], [45, 'Front'], [46, 'Back'], [47, 'Waist'], [18, 'Faces'], [19, 'Gear'], [11, 'Shirts'], [12, 'Pants']]
 async function robloxRegularItems(userId) {
   const results = await Promise.allSettled(REGULAR_TYPES.map(([tid]) => robloxGetJson(`https://inventory.roblox.com/v2/users/${userId}/inventory/${tid}?limit=25&sortOrder=Desc`)))
@@ -504,6 +533,38 @@ async function handleRoute(request, { params }) {
       const totalSales = ['ebay', 'eldorado', 'sellauth', 'other'].reduce((a, k) => a + (Number(sbs[k]) || 0), 0)
       const reviews = await db.collection('reviews').find({}).sort({ pinned: -1, createdAt: -1 }).toArray()
       return json({ totalSales, salesBySource: sbs, reviews: reviews.map(clean) })
+    }
+
+    // ---------- DISCORD BOT: claim delivery (toy code / account) ----------
+    // Called by the Discord bot with a shared secret; delivers the assigned toy code or account login.
+    if (route === '/discord/claim' && method === 'POST') {
+      const secret = request.headers.get('x-bot-secret')
+      if (!process.env.BOT_SHARED_SECRET || secret !== process.env.BOT_SHARED_SECRET) return json({ error: 'Unauthorized' }, 401)
+      const b = await request.json().catch(() => ({}))
+      if (!b.orderNumber) return json({ error: 'orderNumber required' }, 400)
+      const d = await claimDeliverable(db, b.orderNumber, b.discordUserId)
+      if (!d) return json({ error: 'No claimable delivery found for that order number.' }, 404)
+      return json({ success: true, delivery: d, message: claimMessage(d, b.orderNumber) })
+    }
+    // Discord Interactions webhook (slash command /claim). Verifies Ed25519 signature once keys are set.
+    if (route === '/discord/interactions' && method === 'POST') {
+      const pub = process.env.DISCORD_PUBLIC_KEY
+      const sig = request.headers.get('x-signature-ed25519')
+      const ts = request.headers.get('x-signature-timestamp')
+      const raw = await request.text()
+      if (!pub) return json({ error: 'Discord interactions not configured yet' }, 503)
+      if (!sig || !ts || !verifyDiscordSig(pub, sig, ts, raw)) return new NextResponse('invalid request signature', { status: 401 })
+      let body = {}
+      try { body = JSON.parse(raw) } catch (e) {}
+      if (body.type === 1) return json({ type: 1 }) // PING
+      if (body.type === 2 && body.data?.name === 'claim') {
+        const opt = (body.data.options || []).find(o => o.name === 'order')
+        const orderNumber = opt?.value
+        const discordUserId = body.member?.user?.id || body.user?.id
+        const d = await claimDeliverable(db, orderNumber, discordUserId)
+        return json({ type: 4, data: { content: claimMessage(d, orderNumber), flags: 64 } })
+      }
+      return json({ type: 4, data: { content: 'Unknown command', flags: 64 } })
     }
 
     // ---------- ROBLOX PROFILES (public) ----------
@@ -800,11 +861,12 @@ async function handleRoute(request, { params }) {
         const paid = orders.filter(o => o.status === 'paid')
         const pending = orders.filter(o => o.status === 'pending_payment')
         const cfg = await db.collection('settings').findOne({ id: 'botConfig' })
-        const botConfigured = !!(cfg && cfg.discordBotToken && cfg.robloxEnabled)
+        const botConfigured = !!(cfg && cfg.discordBotToken)
+        const accountsCount = await db.collection('accounts').countDocuments({})
+        const toycodesCount = await db.collection('toycodes').countDocuments({})
         return json({
-          stats: { total: orders.length, paid: paid.length, pending: pending.length, revenue: paid.reduce((a, o) => a + (o.amountUsd || 0), 0) },
-          botConfigured,
-          robloxBot: 'voIIium',
+          stats: { total: orders.length, paid: paid.length, pending: pending.length, revenue: paid.reduce((a, o) => a + (o.amountUsd || 0), 0), accounts: accountsCount, toycodes: toycodesCount },
+          botConfigured, botOnline: !!(cfg && cfg.botOnline), robloxBot: 'voIIium',
           orders: orders.slice(0, 50).map(clean)
         })
       }
@@ -814,7 +876,8 @@ async function handleRoute(request, { params }) {
         return json({ config: {
           discordBotTokenSet: !!cfg.discordBotToken, discordBotTokenMasked: mask(cfg.discordBotToken),
           discordClientId: cfg.discordClientId || '', discordGuildId: cfg.discordGuildId || '', discordChannelId: cfg.discordChannelId || '',
-          robloxEnabled: !!cfg.robloxEnabled
+          discordPublicKeySet: !!process.env.DISCORD_PUBLIC_KEY, botSharedSecretSet: !!process.env.BOT_SHARED_SECRET,
+          robloxEnabled: !!cfg.robloxEnabled, botOnline: !!cfg.botOnline, robloxBot: 'voIIium', dashboardSecretSet: !!process.env.ADMIN_DASHBOARD_SECRET
         } })
       }
       if (route === '/admin/dashboard/bot-config' && method === 'POST') {
@@ -825,6 +888,7 @@ async function handleRoute(request, { params }) {
         if (b.discordGuildId != null) set.discordGuildId = b.discordGuildId.toString()
         if (b.discordChannelId != null) set.discordChannelId = b.discordChannelId.toString()
         if (b.robloxEnabled != null) set.robloxEnabled = !!b.robloxEnabled
+        if (b.botOnline != null) set.botOnline = !!b.botOnline
         await db.collection('settings').updateOne({ id: 'botConfig' }, { $set: set }, { upsert: true })
         return json({ success: true })
       }
@@ -836,6 +900,45 @@ async function handleRoute(request, { params }) {
         if (!cfg.robloxEnabled || !robloxCookie()) return json({ error: 'Roblox bot is not configured yet. Add the bot keys and enable it first.', pending: true }, 400)
         // Bot trade automation will be wired here once keys are provided.
         return json({ error: 'Roblox trade automation is not enabled on this build yet.', pending: true }, 501)
+      }
+      // ----- Digital goods inventory: accounts (profiles) + toy codes -----
+      if (route === '/admin/dashboard/accounts' && method === 'GET') {
+        return json({ accounts: (await db.collection('accounts').find({}).sort({ createdAt: -1 }).toArray()).map(clean) })
+      }
+      if (route === '/admin/dashboard/accounts' && method === 'POST') {
+        const b = await request.json()
+        if (!b.title || !b.username || !b.password) return json({ error: 'Title, username and password are required' }, 400)
+        const acc = { id: uuidv4(), type: 'account', title: b.title.toString().trim(), description: (b.description || '').toString().trim(), price: Number(b.price) || 0, imageUrl: (b.imageUrl || '').toString().trim(), credentials: { username: b.username.toString(), password: b.password.toString(), email: (b.email || '').toString(), notes: (b.notes || '').toString() }, status: 'available', claimOrderNumber: null, createdAt: new Date() }
+        await db.collection('accounts').insertOne(acc)
+        return json({ account: clean(acc) })
+      }
+      if (route.startsWith('/admin/dashboard/accounts/') && method === 'DELETE') {
+        await db.collection('accounts').deleteOne({ id: path[3] })
+        return json({ success: true })
+      }
+      if (route === '/admin/dashboard/toycodes' && method === 'GET') {
+        return json({ toycodes: (await db.collection('toycodes').find({}).sort({ createdAt: -1 }).toArray()).map(clean) })
+      }
+      if (route === '/admin/dashboard/toycodes' && method === 'POST') {
+        const b = await request.json()
+        if (!b.title || !b.code) return json({ error: 'Title and code are required' }, 400)
+        const tc = { id: uuidv4(), type: 'toycode', title: b.title.toString().trim(), description: (b.description || '').toString().trim(), price: Number(b.price) || 0, imageUrl: (b.imageUrl || '').toString().trim(), code: b.code.toString().trim(), status: 'available', claimOrderNumber: null, createdAt: new Date() }
+        await db.collection('toycodes').insertOne(tc)
+        return json({ toycode: clean(tc) })
+      }
+      if (route.startsWith('/admin/dashboard/toycodes/') && method === 'DELETE') {
+        await db.collection('toycodes').deleteOne({ id: path[3] })
+        return json({ success: true })
+      }
+      // Assign an available item to an order number so the buyer can /claim it via the Discord bot
+      if (route === '/admin/dashboard/assign' && method === 'POST') {
+        const b = await request.json()
+        const coll = b.type === 'account' ? 'accounts' : b.type === 'toycode' ? 'toycodes' : null
+        if (!coll || !b.id || !b.orderNumber) return json({ error: 'type, id and orderNumber are required' }, 400)
+        const item = await db.collection(coll).findOne({ id: b.id })
+        if (!item) return json({ error: 'Item not found' }, 404)
+        await db.collection(coll).updateOne({ id: b.id }, { $set: { status: 'sold', claimOrderNumber: String(b.orderNumber), assignedAt: new Date() } })
+        return json({ success: true })
       }
 
       // ----- Reviews management -----
