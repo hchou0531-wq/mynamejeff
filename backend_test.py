@@ -8,7 +8,7 @@ import sys
 import time
 
 # Base URL from environment
-BASE_URL = "https://roblox-market-24.preview.emergentagent.com/api"
+BASE_URL = "https://landing-page-copy-1.preview.emergentagent.com/api"
 
 def test_pagination_bugfix():
     """

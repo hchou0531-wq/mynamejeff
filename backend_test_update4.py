@@ -10,7 +10,7 @@ import sys
 from typing import Dict, Any, Optional
 
 # Read base URL from .env
-BASE_URL = "https://roblox-market-24.preview.emergentagent.com/api"
+BASE_URL = "https://landing-page-copy-1.preview.emergentagent.com/api"
 
 class Colors:
     GREEN = '\033[92m'
