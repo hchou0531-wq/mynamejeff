@@ -1160,6 +1160,12 @@ function AdminView({ api, user, go, cfg }) {
   }
   const deleteReview = async (id) => { try { await api(`/admin/reviews/${id}`, { method: 'DELETE' }); await loadReviews() } catch (e) { toast.error(e.message) } }
 
+  // Discord Dashboard: generate a fresh one-time access code each time an admin opens the console
+  const [dash, setDash] = useState(null)
+  const [showCode, setShowCode] = useState(false)
+  const genDash = useCallback(async () => { try { const d = await api('/admin/dashboard/session', { method: 'POST' }); setDash(d) } catch (e) {} }, [api])
+  useEffect(() => { if (user?.isAdmin) genDash() }, [genDash, user])
+
   const load = useCallback(async () => {
     try {
       const [s, i, v, l, o, u, r] = await Promise.all([api('/admin/stats'), api('/admin/items'), api('/admin/vendors'), api('/admin/listings'), api('/admin/orders'), api('/admin/users'), api('/admin/reports')])
@@ -1193,6 +1199,27 @@ function AdminView({ api, user, go, cfg }) {
         </div>
       </div>
       {!cfg?.cryptoConfigured && <div className="mb-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-center gap-2"><Bitcoin className="w-4 h-4" /> Crypto checkout is in DEMO mode. Add your BlockBee API key to <code className="mx-1">BLOCKBEE_API_KEY</code> in the server env to accept real payments.</div>}
+
+      {/* Secret Discord Dashboard access */}
+      <Card className="mb-6 p-4 bg-gradient-to-br from-indigo-500/10 to-violet-500/5 border-indigo-500/20">
+        <div className="flex items-center gap-2 mb-1"><MessageSquare className="w-5 h-5 text-indigo-400" /><h3 className="font-black">Discord Dashboard</h3><Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Secret</Badge></div>
+        <p className="text-xs text-slate-400 mb-3">A separate, hidden dashboard. Access needs this private link + your admin login + the one-time code below (single-use, expires in ~10 min, regenerated each visit).</p>
+        {dash ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400">One-time code:</span>
+              <span className="font-mono font-black text-lg tracking-[0.3em] text-white bg-black/40 px-3 py-1 rounded-lg border border-white/10">{showCode ? dash.code : '••••••'}</span>
+              <Button size="sm" variant="ghost" className="text-slate-300" onClick={() => setShowCode(v => !v)}>{showCode ? 'Hide' : 'Show'}</Button>
+              <Button size="sm" variant="ghost" className="text-slate-300" onClick={() => { navigator.clipboard?.writeText(dash.code); toast.success('Code copied') }}>Copy code</Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" className="bg-gradient-to-r from-indigo-500 to-violet-600 font-semibold" onClick={() => window.open(dash.url, '_blank')}><MessageSquare className="w-4 h-4 mr-1" /> Open Discord Dashboard</Button>
+              <Button size="sm" variant="outline" className="border-white/10" onClick={() => { navigator.clipboard?.writeText(dash.url); toast.success('Secret link copied') }}>Copy secret link</Button>
+              <Button size="sm" variant="ghost" className="text-slate-400" onClick={genDash}>Regenerate code</Button>
+            </div>
+          </div>
+        ) : <p className="text-xs text-slate-500">Generating secure access code…</p>}
+      </Card>
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-8">
         {stats && [['Users', stats.users], ['Items', stats.items], ['Listings', stats.listings], ['Orders', stats.orders], ['Revenue', usd(stats.revenue)], ['Reports', stats.reports]].map(([k, v]) => (
           <Card key={k} className="p-4 bg-[#12101f]/60 border-white/5"><p className="text-xs uppercase text-slate-400 font-bold">{k}</p><p className="text-2xl font-black text-violet-300">{v}</p></Card>

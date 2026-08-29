@@ -773,6 +773,71 @@ async function handleRoute(request, { params }) {
       const user = await getUser(request, db)
       if (!user || !user.isAdmin) return json({ error: 'Admin only' }, 403)
 
+      // ----- Discord Dashboard (secret link + admin login + one-time 2FA code) -----
+      if (route === '/admin/dashboard/session' && method === 'POST') {
+        await db.collection('dashboardCodes').deleteMany({ adminId: user.id }) // rotate: delete previous codes
+        const code = String(Math.floor(100000 + Math.random() * 900000)) // 6-digit one-time code
+        const now = new Date()
+        const expiresAt = new Date(now.getTime() + 10 * 60 * 1000) // 10 min
+        await db.collection('dashboardCodes').insertOne({ id: uuidv4(), adminId: user.id, code, used: false, createdAt: now, expiresAt })
+        const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        const slug = process.env.ADMIN_DASHBOARD_SECRET || ''
+        return json({ code, expiresAt, url: `${base}/admin/discord-dashboard/${slug}` })
+      }
+      if (route === '/admin/dashboard/verify' && method === 'POST') {
+        const b = await request.json()
+        const slug = (b.slug || '').toString()
+        const code = (b.code || '').toString().trim()
+        if (!process.env.ADMIN_DASHBOARD_SECRET || slug !== process.env.ADMIN_DASHBOARD_SECRET) return json({ error: 'Invalid dashboard link' }, 403)
+        const rec = await db.collection('dashboardCodes').findOne({ adminId: user.id, code, used: false })
+        if (!rec) return json({ error: 'Invalid or expired code' }, 403)
+        if (new Date(rec.expiresAt) < new Date()) { await db.collection('dashboardCodes').deleteOne({ id: rec.id }); return json({ error: 'Code expired' }, 403) }
+        await db.collection('dashboardCodes').deleteOne({ id: rec.id }) // single-use -> delete
+        return json({ ok: true })
+      }
+      if (route === '/admin/dashboard/overview' && method === 'GET') {
+        const orders = await db.collection('orders').find({}).sort({ createdAt: -1 }).toArray()
+        const paid = orders.filter(o => o.status === 'paid')
+        const pending = orders.filter(o => o.status === 'pending_payment')
+        const cfg = await db.collection('settings').findOne({ id: 'botConfig' })
+        const botConfigured = !!(cfg && cfg.discordBotToken && cfg.robloxEnabled)
+        return json({
+          stats: { total: orders.length, paid: paid.length, pending: pending.length, revenue: paid.reduce((a, o) => a + (o.amountUsd || 0), 0) },
+          botConfigured,
+          robloxBot: 'voIIium',
+          orders: orders.slice(0, 50).map(clean)
+        })
+      }
+      if (route === '/admin/dashboard/bot-config' && method === 'GET') {
+        const cfg = (await db.collection('settings').findOne({ id: 'botConfig' })) || {}
+        const mask = v => v ? ('••••••' + String(v).slice(-4)) : ''
+        return json({ config: {
+          discordBotTokenSet: !!cfg.discordBotToken, discordBotTokenMasked: mask(cfg.discordBotToken),
+          discordClientId: cfg.discordClientId || '', discordGuildId: cfg.discordGuildId || '', discordChannelId: cfg.discordChannelId || '',
+          robloxEnabled: !!cfg.robloxEnabled
+        } })
+      }
+      if (route === '/admin/dashboard/bot-config' && method === 'POST') {
+        const b = await request.json()
+        const set = { id: 'botConfig', updatedAt: new Date() }
+        if (b.discordBotToken) set.discordBotToken = b.discordBotToken.toString()
+        if (b.discordClientId != null) set.discordClientId = b.discordClientId.toString()
+        if (b.discordGuildId != null) set.discordGuildId = b.discordGuildId.toString()
+        if (b.discordChannelId != null) set.discordChannelId = b.discordChannelId.toString()
+        if (b.robloxEnabled != null) set.robloxEnabled = !!b.robloxEnabled
+        await db.collection('settings').updateOne({ id: 'botConfig' }, { $set: set }, { upsert: true })
+        return json({ success: true })
+      }
+      if (route === '/admin/dashboard/fulfill' && method === 'POST') {
+        const b = await request.json()
+        const order = await db.collection('orders').findOne({ orderId: b.orderId })
+        if (!order) return json({ error: 'Order not found' }, 404)
+        const cfg = (await db.collection('settings').findOne({ id: 'botConfig' })) || {}
+        if (!cfg.robloxEnabled || !robloxCookie()) return json({ error: 'Roblox bot is not configured yet. Add the bot keys and enable it first.', pending: true }, 400)
+        // Bot trade automation will be wired here once keys are provided.
+        return json({ error: 'Roblox trade automation is not enabled on this build yet.', pending: true }, 501)
+      }
+
       // ----- Reviews management -----
       if (route === '/admin/reviews/settings' && method === 'POST') {
         const b = await request.json()
