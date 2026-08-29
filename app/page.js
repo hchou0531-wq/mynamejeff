@@ -168,7 +168,7 @@ export default function App() {
       <main className="relative z-10">
         {view.name === 'browse' && <BrowseView api={api} go={go} initialCategory={view.category} initialSearch={view.search} />}
         {view.name === 'item' && <ItemView api={api} go={go} listingId={view.listingId} user={user} requireAuth={requireAuth} cfg={cfg} />}
-        {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} />}
+        {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} cfg={cfg} />}
         {view.name === 'seller' && <SellerView api={api} go={go} name={view.username} />}
         {view.name === 'sellers' && <SellersView api={api} go={go} />}
         {view.name === 'dashboard' && (user ? <DashboardView api={api} go={go} user={user} /> : <EmptyAuth onLogin={() => { setAuthMode('login'); setAuthOpen(true) }} />)}
@@ -558,7 +558,7 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
   )
 }
 
-function OrderStatusView({ api, go, orderId, refreshNotifs }) {
+function OrderStatusView({ api, go, orderId, refreshNotifs, cfg }) {
   const [order, setOrder] = useState(null)
   const [simulating, setSimulating] = useState(false)
   const load = useCallback(async () => { try { const d = await api(`/payments/status?orderId=${orderId}`); setOrder(d) } catch (e) { toast.error(e.message) } }, [api, orderId])
@@ -586,8 +586,9 @@ function OrderStatusView({ api, go, orderId, refreshNotifs }) {
           <><Loader2 className="w-12 h-12 animate-spin text-amber-400 mx-auto mb-4" /><h1 className="text-2xl font-black mb-1">Awaiting Payment</h1>
             <p className="text-slate-400 mb-6">We're waiting for your crypto payment to be confirmed on-chain. This can take a few minutes.</p>
             <div className="flex flex-col gap-2">
+              {order.checkoutUrl && <Button onClick={() => window.location.assign(order.checkoutUrl)} className="bg-gradient-to-r from-amber-500 to-orange-500 font-semibold"><Bitcoin className="w-4 h-4 mr-2" /> Open crypto checkout</Button>}
               <Button onClick={load} variant="outline" className="border-white/10">Refresh status</Button>
-              <Button onClick={simulate} disabled={simulating} className="bg-gradient-to-r from-amber-500 to-orange-500 font-semibold">{simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Simulate confirmed payment (demo)'}</Button>
+              {!cfg?.cryptoConfigured && <Button onClick={simulate} disabled={simulating} className="bg-gradient-to-r from-amber-500 to-orange-500 font-semibold">{simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Simulate confirmed payment (demo)'}</Button>}
             </div></>
         ) : (
           <><div className="w-16 h-16 rounded-full bg-red-500/15 flex items-center justify-center mx-auto mb-4"><Package className="w-8 h-8 text-red-400" /></div>
