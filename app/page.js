@@ -656,10 +656,14 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
                   {elig.premiumChecked
                     ? <StatusRow ok={elig.premium} title={elig.premium ? 'Roblox Premium active' : 'No Roblox Premium detected'} desc={elig.premium ? "You have the Premium (Roblox+) mark." : 'Trading limiteds requires Roblox Premium. You can still continue, but delivery may not be possible without it.'} />
                     : <StatusRow ok={false} title="Couldn't verify Premium" desc="We couldn't confirm Premium right now. Make sure you have Roblox Premium so the item can be traded to you." />}
-                  {/* Trades — Roblox doesn't expose trade privacy to third parties, so we always remind */}
-                  <StatusRow ok={false} title="Make sure trades are enabled" desc="Trades must be turned on so we can deliver your item.">
-                    <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>
-                  </StatusRow>
+                  {/* Trades — live check via trade-eligible bot; guidance when unverifiable */}
+                  {elig.tradesChecked
+                    ? <StatusRow ok={elig.tradesEnabled} title={elig.tradesEnabled ? 'Trades are enabled' : 'Trades appear to be disabled'} desc={elig.tradesEnabled ? 'Your account can receive trades.' : 'We were unable to trade with your account. Turn trading on so we can deliver your item.'}>
+                        {!elig.tradesEnabled && <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>}
+                      </StatusRow>
+                    : <StatusRow ok={false} title="Make sure trades are enabled" desc="Trades must be turned on so we can deliver your item.">
+                        <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>
+                      </StatusRow>}
                   {/* Inventory */}
                   {elig.inventoryChecked
                     ? <StatusRow ok={elig.inventoryPublic} title={elig.inventoryPublic ? 'Inventory is public' : 'Inventory is private'} desc={elig.inventoryPublic ? 'We can verify your items.' : 'Set your inventory to public so we can verify and deliver items.'}>
@@ -1034,17 +1038,18 @@ function DashboardView({ api, go, user }) {
 }
 
 // ================= Admin =================
-function VerifiedFooter({ className = '' }) {
+function VerifiedFooter({ className = '', sources }) {
+  const list = (sources && sources.length) ? sources : ['eBay', 'SellAuth']
   return (
-    <div className={`flex items-center justify-center gap-1.5 text-xs text-slate-500 ${className}`}>
+    <div className={`flex items-center justify-center gap-1.5 text-xs text-slate-500 flex-wrap ${className}`}>
       <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
       <span>Verified on</span>
-      <span className="font-semibold text-slate-300">eBay</span>
-      <span>+</span>
-      <span className="font-semibold text-slate-300">SellAuth</span>
+      <span className="font-semibold text-slate-300">{list.join(' · ')}</span>
     </div>
   )
 }
+
+const SRC_LABEL = { ebay: 'eBay', eldorado: 'Eldorado', sellauth: 'SellAuth', manual: 'Verified', other: 'Verified' }
 
 function ReviewCard({ r }) {
   const neg = r.rating === 'negative'
@@ -1052,13 +1057,12 @@ function ReviewCard({ r }) {
   const Icon = neg ? ThumbsDown : neu ? AlertTriangle : ThumbsUp
   const ring = neg ? 'border-red-500/25' : neu ? 'border-amber-500/25' : 'border-emerald-500/20'
   const chip = neg ? 'bg-red-500/15 text-red-300' : neu ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'
+  const known = r.source === 'ebay' || r.source === 'eldorado' || r.source === 'sellauth'
   return (
     <Card className={`p-4 bg-[#12101f]/60 ${ring} flex flex-col gap-3`}>
       <div className="flex items-center justify-between">
         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${chip}`}><Icon className="w-3.5 h-3.5" /> {neg ? 'Negative' : neu ? 'Neutral' : 'Positive'}</span>
-        {r.source === 'ebay'
-          ? <span className="text-[10px] uppercase tracking-wider text-slate-500 flex items-center gap-1"><BadgeCheck className="w-3 h-3 text-sky-400" /> eBay</span>
-          : <span className="text-[10px] uppercase tracking-wider text-slate-500">Verified</span>}
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 flex items-center gap-1">{known && <BadgeCheck className="w-3 h-3 text-sky-400" />} {SRC_LABEL[r.source] || 'Verified'}</span>
       </div>
       <div className="relative">
         <Quote className="w-4 h-4 text-white/10 absolute -top-1 -left-1" />
@@ -1080,6 +1084,11 @@ function ReviewsView({ api }) {
   const reviews = data.reviews || []
   const positives = reviews.filter(r => r.rating === 'positive').length
   const pct = reviews.length ? Math.round((positives / reviews.length) * 100) : 100
+  const sbs = data.salesBySource || {}
+  const srcSet = new Set()
+  ;['ebay', 'eldorado', 'sellauth'].forEach(k => { if ((sbs[k] || 0) > 0) srcSet.add(SRC_LABEL[k]) })
+  reviews.forEach(r => { if (SRC_LABEL[r.source] && r.source !== 'manual' && r.source !== 'other') srcSet.add(SRC_LABEL[r.source]) })
+  const sources = [...srcSet]
 
   return (
     <div className="container mx-auto px-4 py-12 max-w-5xl">
@@ -1087,7 +1096,7 @@ function ReviewsView({ api }) {
       <div className="text-center">
         <p className="text-xs uppercase tracking-[0.25em] text-slate-400 mb-2">Total Sales</p>
         <p className="text-6xl md:text-7xl font-black bg-gradient-to-r from-violet-300 via-fuchsia-300 to-amber-200 bg-clip-text text-transparent leading-none">{Number(data.totalSales || 0).toLocaleString()}</p>
-        <VerifiedFooter className="mt-4" />
+        <VerifiedFooter className="mt-4" sources={sources} />
       </div>
 
       {/* quick stats */}
@@ -1108,7 +1117,7 @@ function ReviewsView({ api }) {
             {reviews.map(r => <ReviewCard key={r.id} r={r} />)}
           </div>
         )}
-        <VerifiedFooter className="mt-10" />
+        <VerifiedFooter className="mt-10" sources={sources} />
       </div>
     </div>
   )
@@ -1130,15 +1139,15 @@ function AdminView({ api, user, go, cfg }) {
   const [vendorOpen, setVendorOpen] = useState(false)
   const [reviews, setReviews] = useState([])
   const [totalSales, setTotalSales] = useState(0)
-  const [salesInput, setSalesInput] = useState('')
+  const [salesFields, setSalesFields] = useState({ ebay: '', eldorado: '', sellauth: '', other: '' })
   const [ebayUrl, setEbayUrl] = useState('')
   const [importing, setImporting] = useState(false)
-  const [newReview, setNewReview] = useState({ author: '', comment: '', rating: 'positive', item: '' })
+  const [newReview, setNewReview] = useState({ author: '', comment: '', rating: 'positive', item: '', source: 'ebay' })
 
   const loadReviews = useCallback(async () => {
-    try { const rv = await api('/reviews'); setReviews(rv.reviews || []); setTotalSales(rv.totalSales || 0); setSalesInput(String(rv.totalSales || 0)) } catch (e) {}
+    try { const rv = await api('/reviews'); setReviews(rv.reviews || []); setTotalSales(rv.totalSales || 0); const s = rv.salesBySource || {}; setSalesFields({ ebay: String(s.ebay || 0), eldorado: String(s.eldorado || 0), sellauth: String(s.sellauth || 0), other: String(s.other || 0) }) } catch (e) {}
   }, [api])
-  const saveTotalSales = async () => { try { const d = await api('/admin/reviews/settings', { method: 'POST', body: JSON.stringify({ totalSales: Number(salesInput) }) }); setTotalSales(d.totalSales); toast.success('Total sales updated') } catch (e) { toast.error(e.message) } }
+  const saveSales = async () => { try { const d = await api('/admin/reviews/settings', { method: 'POST', body: JSON.stringify({ salesBySource: { ebay: Number(salesFields.ebay) || 0, eldorado: Number(salesFields.eldorado) || 0, sellauth: Number(salesFields.sellauth) || 0, other: Number(salesFields.other) || 0 } }) }); setTotalSales(d.totalSales); toast.success('Sales updated') } catch (e) { toast.error(e.message) } }
   const importEbay = async () => {
     if (!ebayUrl.trim()) { toast.error('Paste an eBay feedback profile URL'); return }
     setImporting(true)
@@ -1147,7 +1156,7 @@ function AdminView({ api, user, go, cfg }) {
   }
   const addReview = async () => {
     if (!newReview.comment.trim()) { toast.error('Enter a review comment'); return }
-    try { await api('/admin/reviews', { method: 'POST', body: JSON.stringify({ ...newReview, source: 'manual' }) }); toast.success('Review added'); setNewReview({ author: '', comment: '', rating: 'positive', item: '' }); await loadReviews() } catch (e) { toast.error(e.message) }
+    try { await api('/admin/reviews', { method: 'POST', body: JSON.stringify({ ...newReview }) }); toast.success('Review added'); setNewReview({ author: '', comment: '', rating: 'positive', item: '', source: newReview.source }); await loadReviews() } catch (e) { toast.error(e.message) }
   }
   const deleteReview = async (id) => { try { await api(`/admin/reviews/${id}`, { method: 'DELETE' }); await loadReviews() } catch (e) { toast.error(e.message) } }
 
@@ -1253,37 +1262,48 @@ function AdminView({ api, user, go, cfg }) {
         </TabsContent>
 
         <TabsContent value="reviews" className="mt-4 space-y-5">
-          {/* Total sales */}
+          {/* Total sales (combined across sources) */}
           <Card className="p-4 bg-[#12101f]/60 border-white/5">
-            <Label className="text-xs text-slate-400">Total Sales (shown on the public Reviews page)</Label>
-            <div className="flex items-center gap-2 mt-2">
-              <Input type="number" value={salesInput} onChange={e => setSalesInput(e.target.value)} placeholder="e.g. 1240" className="bg-black/30 border-white/10 max-w-[200px]" />
-              <Button onClick={saveTotalSales} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Save</Button>
-              <span className="text-xs text-slate-500">Current: <span className="text-slate-300 font-semibold">{Number(totalSales).toLocaleString()}</span></span>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs text-slate-400">Sales by source (combined into Total Sales on the public page)</Label>
+              <span className="text-xs text-slate-500">Total: <span className="text-slate-200 font-bold">{Number(totalSales).toLocaleString()}</span></span>
             </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[['ebay', 'eBay'], ['eldorado', 'Eldorado'], ['sellauth', 'SellAuth'], ['other', 'Other']].map(([k, label]) => (
+                <div key={k}>
+                  <Label className="text-[11px] text-slate-500">{label}</Label>
+                  <Input type="number" value={salesFields[k]} onChange={e => setSalesFields({ ...salesFields, [k]: e.target.value })} placeholder="0" className="bg-black/30 border-white/10 mt-1" />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-3"><Button onClick={saveSales} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Save sales</Button></div>
           </Card>
 
           {/* eBay import */}
           <Card className="p-4 bg-[#12101f]/60 border-white/5">
             <div className="flex items-center gap-2 mb-2"><Upload className="w-4 h-4 text-emerald-400" /><h3 className="font-bold text-sm">Auto-detect from eBay feedback</h3></div>
-            <p className="text-xs text-slate-400 mb-3">Paste your eBay feedback profile URL. We'll import received-as-seller feedback and set Total Sales from your eBay feedback score.</p>
+            <p className="text-xs text-slate-400 mb-3">Paste your eBay feedback profile URL. We'll import received-as-seller feedback and set the eBay sales count from your eBay feedback score.</p>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <Input value={ebayUrl} onChange={e => setEbayUrl(e.target.value)} placeholder="https://www.ebay.com/fdbk/feedback_profile/USERNAME?filter=feedback_page%3ARECEIVED_AS_SELLER" className="bg-black/30 border-white/10 flex-1" />
               <Button onClick={importEbay} disabled={importing} className="bg-gradient-to-r from-emerald-500 to-teal-600 font-semibold">{importing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Detecting...</> : <><Upload className="w-4 h-4 mr-2" /> Detect &amp; Import</>}</Button>
             </div>
           </Card>
 
-          {/* Manual add */}
+          {/* Manual add (any source: eBay / Eldorado / SellAuth / Manual) */}
           <Card className="p-4 bg-[#12101f]/60 border-white/5">
-            <div className="flex items-center gap-2 mb-3"><Plus className="w-4 h-4 text-violet-400" /><h3 className="font-bold text-sm">Add a review manually</h3></div>
-            <div className="grid sm:grid-cols-2 gap-2">
+            <div className="flex items-center gap-2 mb-3"><Plus className="w-4 h-4 text-violet-400" /><h3 className="font-bold text-sm">Add a review from any source</h3></div>
+            <div className="grid sm:grid-cols-3 gap-2">
               <Input value={newReview.author} onChange={e => setNewReview({ ...newReview, author: e.target.value })} placeholder="Buyer name (e.g. j***n)" className="bg-black/30 border-white/10" />
+              <Select value={newReview.source} onValueChange={v => setNewReview({ ...newReview, source: v })}>
+                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue placeholder="Source" /></SelectTrigger>
+                <SelectContent><SelectItem value="ebay">eBay</SelectItem><SelectItem value="eldorado">Eldorado</SelectItem><SelectItem value="sellauth">SellAuth</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
+              </Select>
               <Select value={newReview.rating} onValueChange={v => setNewReview({ ...newReview, rating: v })}>
                 <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="positive">Positive</SelectItem><SelectItem value="neutral">Neutral</SelectItem><SelectItem value="negative">Negative</SelectItem></SelectContent>
               </Select>
-              <Input value={newReview.item} onChange={e => setNewReview({ ...newReview, item: e.target.value })} placeholder="Item (optional)" className="bg-black/30 border-white/10 sm:col-span-2" />
-              <Textarea value={newReview.comment} onChange={e => setNewReview({ ...newReview, comment: e.target.value })} placeholder="Review comment" className="bg-black/30 border-white/10 sm:col-span-2" />
+              <Input value={newReview.item} onChange={e => setNewReview({ ...newReview, item: e.target.value })} placeholder="Item (optional)" className="bg-black/30 border-white/10 sm:col-span-3" />
+              <Textarea value={newReview.comment} onChange={e => setNewReview({ ...newReview, comment: e.target.value })} placeholder="Review comment" className="bg-black/30 border-white/10 sm:col-span-3" />
             </div>
             <div className="flex justify-end mt-3"><Button onClick={addReview} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Add review</Button></div>
           </Card>

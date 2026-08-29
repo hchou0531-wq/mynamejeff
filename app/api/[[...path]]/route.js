@@ -260,6 +260,14 @@ async function robloxLimiteds(userId) {
 // an "enable trades" guidance reminder instead of a verified result.
 const RAP_LIMIT = 1500
 function openCloudKey() { const k = process.env.ROBLOX_OPENCLOUD_KEY; return k && k.trim() ? k.trim() : null }
+function robloxCookie() { const c = process.env.ROBLOX_COOKIE; return c && c.trim() ? c.trim() : null }
+async function robloxCookieGetJson(url) {
+  const ck = robloxCookie()
+  if (!ck) throw new Error('no cookie')
+  const res = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0', Cookie: `.ROBLOSECURITY=${ck}` }, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Roblox ${res.status}`)
+  return await res.json()
+}
 async function robloxPremium(userId) {
   const key = openCloudKey()
   if (!key) return { premium: null, checked: false }
@@ -270,12 +278,24 @@ async function robloxPremium(userId) {
     return { premium: !!d.premium, checked: true }
   } catch (e) { return { premium: null, checked: false } }
 }
+// Trades: uses the server's trade-eligible bot cookie. can-trade-with reflects the TARGET's trade
+// setting (CanTrade / ReceiverCannotTrade / privacy). If our bot itself can't trade -> unchecked (UI shows guidance).
+async function robloxTrades(userId) {
+  if (!robloxCookie()) return { enabled: null, checked: false, status: null }
+  try {
+    const t = await robloxCookieGetJson(`https://trades.roblox.com/v1/users/${userId}/can-trade-with`)
+    const status = t.status || null
+    if (status === 'SenderCannotTrade' || status === 'InsufficientPermissions' || status === 'Unknown') return { enabled: null, checked: false, status }
+    if (t.canTrade === true || status === 'CanTrade') return { enabled: true, checked: true, status }
+    return { enabled: false, checked: true, status } // ReceiverCannotTrade, privacy filters, etc.
+  } catch (e) { return { enabled: null, checked: false, status: null } }
+}
 async function robloxCheckoutEligibility(userId) {
   const out = {
     userId: Number(userId),
     premium: null, premiumChecked: false,
     inventoryPublic: null, inventoryChecked: false,
-    tradesEnabled: null, tradeStatus: null, tradesChecked: false, // trades privacy is not verifiable by third parties -> UI always shows guidance
+    tradesEnabled: null, tradeStatus: null, tradesChecked: false,
     limiteds: [], rapLimit: RAP_LIMIT
   }
   // Inventory visibility (public endpoint, no auth needed)
@@ -283,6 +303,9 @@ async function robloxCheckoutEligibility(userId) {
   // Premium via Roblox Open Cloud
   const p = await robloxPremium(userId)
   out.premium = p.premium; out.premiumChecked = p.checked
+  // Trades via bot cookie
+  const t = await robloxTrades(userId)
+  out.tradesEnabled = t.enabled; out.tradeStatus = t.status; out.tradesChecked = t.checked
   // Owned limiteds so the buyer can pick which item(s) to give (each flagged if RAP >= limit)
   try { out.limiteds = await robloxLimiteds(userId) } catch (e) { out.limiteds = [] }
   return out
@@ -476,8 +499,11 @@ async function handleRoute(request, { params }) {
     // ---------- REVIEWS (public) ----------
     if (route === '/reviews' && method === 'GET') {
       const settings = await db.collection('settings').findOne({ id: 'reviews' })
+      const sbs = { ebay: 0, eldorado: 0, sellauth: 0, other: 0, ...(settings?.salesBySource || {}) }
+      if (!settings?.salesBySource && settings?.totalSales) sbs.other = settings.totalSales // legacy migrate for display
+      const totalSales = ['ebay', 'eldorado', 'sellauth', 'other'].reduce((a, k) => a + (Number(sbs[k]) || 0), 0)
       const reviews = await db.collection('reviews').find({}).sort({ pinned: -1, createdAt: -1 }).toArray()
-      return json({ totalSales: settings?.totalSales ?? 0, reviews: reviews.map(clean) })
+      return json({ totalSales, salesBySource: sbs, reviews: reviews.map(clean) })
     }
 
     // ---------- ROBLOX PROFILES (public) ----------
@@ -750,9 +776,21 @@ async function handleRoute(request, { params }) {
       // ----- Reviews management -----
       if (route === '/admin/reviews/settings' && method === 'POST') {
         const b = await request.json()
-        const totalSales = Math.max(0, Math.floor(Number(b.totalSales) || 0))
-        await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', totalSales, updatedAt: new Date() } }, { upsert: true })
-        return json({ success: true, totalSales })
+        const doc = (await db.collection('settings').findOne({ id: 'reviews' })) || {}
+        const sbs = { ebay: 0, eldorado: 0, sellauth: 0, other: 0, ...(doc.salesBySource || {}) }
+        if (!doc.salesBySource && doc.totalSales) sbs.other = doc.totalSales // migrate legacy
+        const keys = ['ebay', 'eldorado', 'sellauth', 'other']
+        if (b.salesBySource && typeof b.salesBySource === 'object') {
+          for (const k of keys) if (b.salesBySource[k] != null) sbs[k] = Math.max(0, Math.floor(Number(b.salesBySource[k]) || 0))
+        } else if (b.source) {
+          const k = keys.includes(b.source) ? b.source : 'other'
+          sbs[k] = Math.max(0, Math.floor(Number(b.sales) || 0))
+        } else if (b.totalSales != null) {
+          sbs.other = Math.max(0, Math.floor(Number(b.totalSales) || 0))
+        }
+        const totalSales = keys.reduce((a, k) => a + sbs[k], 0)
+        await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', salesBySource: sbs, totalSales, updatedAt: new Date() } }, { upsert: true })
+        return json({ success: true, salesBySource: sbs, totalSales })
       }
       if (route === '/admin/reviews' && method === 'POST') {
         const b = await request.json()
@@ -783,9 +821,14 @@ async function handleRoute(request, { params }) {
           await db.collection('reviews').insertOne({ id: uuidv4(), author: it.author || 'eBay buyer', comment: it.comment, rating: it.rating, item: it.item, period: it.period, source: 'ebay', ebayFeedbackId: it.ebayFeedbackId, pinned: false, createdAt: new Date() })
           imported++
         }
-        // Optionally set total sales to the detected eBay feedback score if admin hasn't set one yet
+        // Optionally set eBay sales to the detected eBay feedback score (combined into total)
         if (parsed.feedbackScore != null && b.setTotalSales) {
-          await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', totalSales: parsed.feedbackScore, updatedAt: new Date() } }, { upsert: true })
+          const doc = (await db.collection('settings').findOne({ id: 'reviews' })) || {}
+          const sbs = { ebay: 0, eldorado: 0, sellauth: 0, other: 0, ...(doc.salesBySource || {}) }
+          if (!doc.salesBySource && doc.totalSales) sbs.other = doc.totalSales
+          sbs.ebay = parsed.feedbackScore
+          const totalSales = ['ebay', 'eldorado', 'sellauth', 'other'].reduce((a, k) => a + (Number(sbs[k]) || 0), 0)
+          await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', salesBySource: sbs, totalSales, updatedAt: new Date() } }, { upsert: true })
         }
         return json({ imported, skipped, detected: parsed.items.length, feedbackScore: parsed.feedbackScore, handle: parsed.handle })
       }
