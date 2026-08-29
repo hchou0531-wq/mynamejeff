@@ -962,3 +962,17 @@ agent_communication:
     -agent: "testing"
     -message: "✅ UPDATE 16 BACKEND TESTING COMPLETE - ALL TESTS PASSED (25/25). Comprehensive testing completed for Discord Embeds + bot-status endpoints: (1) EMBEDS CRUD: All operations working correctly - Create embed with valid data returns HTTP 200 with embed object (id, name, title), POST without name returns 400, POST with name but no title AND no description returns 400, GET /api/admin/dashboard/embeds returns array including created embeds, UPSERT-BY-NAME working (re-POST with same name edits existing, count unchanged, title updated), EDIT-BY-ID working (POST with id updates embed), DELETE working (embed removed and not in GET) ✓ (2) GUARDS: All admin endpoints correctly return 403 for non-admin users AND for requests with no auth header - GET/POST /api/admin/dashboard/embeds, GET /api/admin/dashboard/bot-status, POST /api/admin/dashboard/register-commands all protected ✓ (3) BOT STATUS: GET /api/admin/dashboard/bot-status returns HTTP 200 with all required keys - tokenValid=true, botUsername='Ethereal#4833', publicKeySet=true, commandsRegistered=true, commands=['claim','embed'], ready=true ✓ (4) REGISTER COMMANDS: POST /api/admin/dashboard/register-commands returns HTTP 200 with success=true, commands=['claim','embed'] (idempotent real Discord PUT) ✓ (5) POST-TO-CHANNEL: POST /api/admin/dashboard/embeds/:id/post returns HTTP 200 with success=true, messageId (real Discord message posted to channel), POST with nonexistent id returns 404 ✓ (6) INTERACTIONS KEY CHECK: POST /api/discord/interactions with no signature headers returns HTTP 401 (NOT 503), proving DISCORD_PUBLIC_KEY is configured ✓ (7) REGRESSION: GET /api/config returns cryptoConfigured=true, provider='blockbee'; admin login returns isAdmin=true ✓. No critical issues found. All Discord Embeds and bot-status endpoints are production-ready."
 
+
+
+## ===== UPDATE 17: Bot Console (start sequence + error reporting) =====
+  - task: "Bot Console: POST /api/admin/dashboard/bot-start boot sequence"
+    file: "app/api/[[...path]]/route.js, app/admin/discord-dashboard/[slug]/page.js"
+    implemented: true
+    working: true
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "NEW feature per user request: a console/terminal in the dashboard to 'start' the bot and see errors. POST /api/admin/dashboard/bot-start (admin only, 403 otherwise) runs a boot sequence and returns {ok, errors, logs:[{level,msg,t}]}: authenticates token (GET /users/@me), checks DISCORD_PUBLIC_KEY, verifies guild membership (GET /guilds/:id, with an invite link on 403/404), registers /claim & /embed, checks channel access (GET /channels/:id), prints the Interactions Endpoint URL reminder, and a final READY / N-errors line. Each failing step logs a 'error' line with a concrete fix. Frontend: new 'Bot Console' nav tab with a terminal panel (colored log levels, timestamps, auto-scroll), Start bot + Clear buttons. VERIFIED by main agent via curl (ok:true; all steps success; bot='Ethereal#4833'; server='scaled.'s server'; channel #welcome-and-rules; guard 403 no-auth) and via browser screenshot (console renders and streams the full READY log)."

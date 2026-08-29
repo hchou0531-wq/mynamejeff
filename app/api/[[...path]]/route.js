@@ -1082,6 +1082,90 @@ async function handleRoute(request, { params }) {
         })
       }
 
+      // ----- Bot "start" boot sequence -> returns console log lines -----
+      if (route === '/admin/dashboard/bot-start' && method === 'POST') {
+        const logs = []
+        const L = (level, msg) => logs.push({ level, msg, t: new Date().toISOString() })
+        let errors = 0
+        const cfg = await getBotCfg(db)
+        const token = cfg.discordBotToken
+        L('info', 'Booting Discord bot service…')
+        L('info', 'Loading configuration from database…')
+
+        // 1) token present + valid
+        let botUser = null
+        if (!token) {
+          L('error', 'No bot token saved. Go to General → Secrets & keys and paste your Discord bot token, then Save.'); errors++
+        } else {
+          L('info', 'Authenticating with Discord (GET /users/@me)…')
+          const r = await discordApi(token, 'GET', '/users/@me')
+          if (r.ok) {
+            botUser = r.data
+            L('success', `Authenticated as ${r.data.username}${r.data.discriminator && r.data.discriminator !== '0' ? '#' + r.data.discriminator : ''} (id ${r.data.id}).`)
+          } else if (r.status === 401) {
+            L('error', 'Bot token is invalid or expired (Discord 401). Reset the token in the Developer Portal → Bot → Reset Token, then re-save it here.'); errors++
+          } else {
+            L('error', `Could not authenticate (Discord ${r.status}: ${r.data?.message || 'unknown'}).`); errors++
+          }
+        }
+
+        // 2) public key
+        if (process.env.DISCORD_PUBLIC_KEY) L('success', 'DISCORD_PUBLIC_KEY is configured (interaction signatures can be verified).')
+        else { L('error', 'DISCORD_PUBLIC_KEY is not set on the server. Slash commands will be rejected (503). Provide your app Public Key.'); errors++ }
+
+        // 3) ids present
+        if (!cfg.discordClientId) { L('error', 'Client (Application) ID is missing. Add it in General → Secrets & keys.'); errors++ }
+        if (!cfg.discordGuildId) { L('error', 'Guild (Server) ID is missing. Add it in General → Secrets & keys.'); errors++ }
+
+        // 4) bot is in the guild
+        if (token && cfg.discordGuildId) {
+          L('info', `Checking guild membership (GET /guilds/${cfg.discordGuildId})…`)
+          const g = await discordApi(token, 'GET', `/guilds/${cfg.discordGuildId}`)
+          if (g.ok) L('success', `Bot is in server "${g.data?.name || cfg.discordGuildId}".`)
+          else if (g.status === 403 || g.status === 404) {
+            L('error', `Bot is not in server ${cfg.discordGuildId} (Discord ${g.status}). Invite it: https://discord.com/oauth2/authorize?client_id=${cfg.discordClientId || 'APP_ID'}&scope=bot+applications.commands&permissions=277025508352`); errors++
+          } else L('warn', `Could not confirm guild access (Discord ${g.status}: ${g.data?.message || 'unknown'}).`)
+        }
+
+        // 5) register slash commands
+        if (token && cfg.discordClientId && cfg.discordGuildId) {
+          L('info', 'Registering slash commands (/claim, /embed)…')
+          const commands = [
+            { name: 'claim', description: 'Claim your paid order (toy code or account login)', type: 1, options: [{ type: 3, name: 'order', description: 'Your order number', required: true }] },
+            { name: 'embed', description: 'Post a saved embed to this channel', type: 1, default_member_permissions: '32', options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
+          ]
+          const rr = await discordApi(token, 'PUT', `/applications/${cfg.discordClientId}/guilds/${cfg.discordGuildId}/commands`, commands)
+          if (rr.ok && Array.isArray(rr.data)) {
+            L('success', `Registered ${rr.data.length} command(s): ${rr.data.map(c => '/' + c.name).join(', ')}.`)
+            await db.collection('settings').updateOne({ id: 'botConfig' }, { $set: { commandsRegisteredAt: new Date(), commandNames: rr.data.map(c => c.name) } }, { upsert: true })
+          } else { L('error', `Failed to register commands (Discord ${rr.status}: ${rr.data?.message || JSON.stringify(rr.data)}).`); errors++ }
+        } else {
+          L('warn', 'Skipping command registration until token + Client ID + Guild ID are all set.')
+        }
+
+        // 6) channel access
+        if (token && cfg.discordChannelId) {
+          L('info', `Checking channel access (GET /channels/${cfg.discordChannelId})…`)
+          const c = await discordApi(token, 'GET', `/channels/${cfg.discordChannelId}`)
+          if (c.ok) L('success', `Channel #${c.data?.name || cfg.discordChannelId} is accessible.`)
+          else { L('error', `Cannot access channel ${cfg.discordChannelId} (Discord ${c.status}: ${c.data?.message || 'unknown'}). Check the ID and that the bot can view it.`); errors++ }
+        } else if (token) {
+          L('warn', 'No Orders Channel ID set — "Post to channel" for embeds will not work until you add one.')
+        }
+
+        // 7) interactions endpoint reminder
+        const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        L('info', `Interactions Endpoint URL: ${base}/api/discord/interactions`)
+        L('info', 'Reminder: paste that URL into Developer Portal → General Information → Interactions Endpoint URL and Save.')
+
+        const ready = errors === 0 && !!botUser && !!process.env.DISCORD_PUBLIC_KEY
+        if (ready) L('success', '✅ Bot is READY. Try /embed and /claim in your server.')
+        else L('error', `Startup finished with ${errors} error(s). Fix the ERROR lines above and press Start again.`)
+
+        return json({ ok: ready, errors, logs })
+      }
+
+
 
       // ----- Reviews management -----
       if (route === '/admin/reviews/settings' && method === 'POST') {

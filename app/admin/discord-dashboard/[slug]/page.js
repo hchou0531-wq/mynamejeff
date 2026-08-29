@@ -1,7 +1,7 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
-import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound, Sparkles, Send, RefreshCw, Pencil, X } from 'lucide-react'
+import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound, Sparkles, Send, RefreshCw, Pencil, X, Terminal } from 'lucide-react'
 
 const api = async (path, opts = {}) => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('rbx_token') : null
@@ -36,6 +36,9 @@ export default function DiscordDashboardPage() {
   const [botStatus, setBotStatus] = useState(null)
   const [statusLoading, setStatusLoading] = useState(false)
   const [registering, setRegistering] = useState(false)
+  const [consoleLines, setConsoleLines] = useState([])
+  const [botRunning, setBotRunning] = useState(false)
+  const consoleEndRef = useRef(null)
 
   useEffect(() => {
     (async () => {
@@ -60,6 +63,21 @@ export default function DiscordDashboardPage() {
     setRegistering(true); setErr('')
     try { await api('/admin/dashboard/register-commands', { method: 'POST' }); await loadBotStatus() } catch (e) { setErr(e.message) } finally { setRegistering(false) }
   }
+  const startBot = async () => {
+    setBotRunning(true)
+    const stamp = new Date().toLocaleTimeString()
+    setConsoleLines([{ level: 'cmd', msg: '$ start discord-bot', t: stamp }])
+    try {
+      const res = await api('/admin/dashboard/bot-start', { method: 'POST' })
+      for (const line of (res.logs || [])) {
+        await new Promise(r => setTimeout(r, 110))
+        setConsoleLines(prev => [...prev, line])
+      }
+      await loadBotStatus()
+    } catch (e) {
+      setConsoleLines(prev => [...prev, { level: 'error', msg: 'Console request failed: ' + e.message, t: new Date().toISOString() }])
+    } finally { setBotRunning(false) }
+  }
 
   // Embeds
   const editEmbed = (e) => { setEmbForm({ id: e.id, name: e.name || '', title: e.title || '', description: e.description || '', color: e.color || '#5865F2', imageUrl: e.imageUrl || '', thumbnailUrl: e.thumbnailUrl || '', footerText: e.footerText || '', authorName: e.authorName || '', fields: Array.isArray(e.fields) ? e.fields.map(f => ({ ...f })) : [] }) }
@@ -76,6 +94,8 @@ export default function DiscordDashboardPage() {
   const postEmbed = async (id) => { setErr(''); try { await api(`/admin/dashboard/embeds/${id}/post`, { method: 'POST', body: JSON.stringify({}) }); setErr('') } catch (e) { setErr(e.message) } }
 
   useEffect(() => { if (step === 'ready' && section === 'general' && !botStatus && !statusLoading) loadBotStatus() }, [step, section, botStatus, statusLoading, loadBotStatus])
+  useEffect(() => { if (step === 'ready' && section === 'console' && !botStatus && !statusLoading) loadBotStatus() }, [step, section, botStatus, statusLoading, loadBotStatus])
+  useEffect(() => { consoleEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [consoleLines])
 
   const verify = async () => {
     setVerifying(true); setErr('')
@@ -113,7 +133,7 @@ export default function DiscordDashboardPage() {
 
   const s = overview?.stats || {}
   const online = botStatus ? botStatus.ready : !!overview?.botOnline
-  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['embeds', 'Embeds', Sparkles], ['general', 'General', Settings]]
+  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['embeds', 'Embeds', Sparkles], ['console', 'Bot Console', Terminal], ['general', 'General', Settings]]
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
   return (
@@ -260,6 +280,34 @@ export default function DiscordDashboardPage() {
             </>
           )}
 
+          {section === 'console' && (
+            <Panel title="Discord Bot Console" icon={Terminal}>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold ${botStatus?.ready ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}><Power className="w-3.5 h-3.5" />{botStatus?.ready ? 'READY' : 'NOT READY'}</span>
+                  {botStatus?.botUsername && <span className="text-xs text-slate-500">{botStatus.botUsername}</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Btn onClick={startBot} disabled={botRunning}>{botRunning ? <><Loader2 className="w-4 h-4 animate-spin mr-1 inline" />Starting…</> : <><Power className="w-4 h-4 mr-1 inline" />Start bot</>}</Btn>
+                  <button onClick={() => setConsoleLines([])} disabled={botRunning} className="text-xs px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 disabled:opacity-50">Clear</button>
+                </div>
+              </div>
+              <div className="rounded-xl bg-black border border-white/10 p-3 h-[380px] overflow-y-auto font-mono text-[12px] leading-relaxed">
+                {consoleLines.length === 0 ? (
+                  <p className="text-slate-600">{'// Press "Start bot" to run the startup checks. Any errors will appear here with how to fix them.'}</p>
+                ) : consoleLines.map((l, i) => (
+                  <div key={i} className="flex gap-2 whitespace-pre-wrap break-words">
+                    <span className="text-slate-600 shrink-0 select-none">{fmtTime(l.t)}</span>
+                    <span className={LEVEL_COLOR[l.level] || 'text-slate-300'}>{(LEVEL_TAG[l.level] || '') + l.msg}</span>
+                  </div>
+                ))}
+                {botRunning && <div className="text-slate-500 animate-pulse">{'\u258B'}</div>}
+                <div ref={consoleEndRef} />
+              </div>
+              <p className="text-[11px] text-slate-500 mt-2">Start bot verifies your token, public key &amp; server membership, registers <code className="text-slate-300">/claim</code> &amp; <code className="text-slate-300">/embed</code>, and checks channel access — reporting any errors to fix.</p>
+            </Panel>
+          )}
+
           {section === 'general' && (
             <>
               <Panel title="Bot status" icon={Bot}>
@@ -319,6 +367,9 @@ function Stat({ icon: Icon, label, value, color }) {
 function Panel({ title, icon: Icon, children }) { return <section className="bg-[#12101f]/60 border border-white/5 rounded-2xl p-5"><h2 className="font-black mb-4 flex items-center gap-2">{Icon && <Icon className="w-5 h-5 text-violet-400" />} {title}</h2>{children}</section> }
 function Field({ label, children }) { return <div><label className="text-[11px] text-slate-500 block mb-1">{label}</label>{children}</div> }
 function Inp({ v, set, ph, type = 'text' }) { return <input type={type} value={v} onChange={e => set(e.target.value)} placeholder={ph} className="inp" /> }
+const LEVEL_COLOR = { cmd: 'text-violet-300', info: 'text-slate-400', success: 'text-emerald-400', warn: 'text-amber-400', error: 'text-red-400' }
+const LEVEL_TAG = { info: '[info] ', success: '[ ok ] ', warn: '[warn] ', error: '[fail] ', cmd: '' }
+function fmtTime(t) { if (!t) return ''; const d = new Date(t); if (isNaN(d.getTime())) return t; return d.toLocaleTimeString() }
 function EmbedPreview({ e }) {
   const color = /^#([0-9a-fA-F]{6})$/.test(e.color) ? e.color : '#5865F2'
   const fields = (e.fields || []).filter(f => f && (f.name || f.value))
