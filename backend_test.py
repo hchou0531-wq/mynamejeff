@@ -1,630 +1,457 @@
 #!/usr/bin/env python3
 """
-Backend test for UPDATE 16: Discord Embeds + bot-status endpoints
-Tests all CRUD operations, guards, bot status, register commands, post-to-channel, and interactions key check
+Backend test for UPDATE 18: Discord bot "application did not respond" fix
+Tests the bot-start endpoint auto-setting and verifying Discord interactions endpoint URL
 """
 
 import requests
 import json
 import sys
+import os
 
-# Base URL from .env
-BASE_URL = "https://cookies-8.preview.emergentagent.com/api"
-
-# Admin credentials
-ADMIN_EMAIL = "admin@robloot.com"
-ADMIN_PASSWORD = "roblootdevtomo"
+# Get base URL from environment
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'https://cookies-8.preview.emergentagent.com')
+API_BASE = f"{BASE_URL}/api"
 
 def print_test(name, passed, details=""):
     status = "✅ PASS" if passed else "❌ FAIL"
     print(f"{status}: {name}")
     if details:
-        print(f"  {details}")
-    print()
+        print(f"  Details: {details}")
+    return passed
 
-def main():
-    print("=" * 80)
-    print("UPDATE 16 BACKEND TESTING: Discord Embeds + bot-status")
-    print("=" * 80)
-    print()
-    
-    # Store test results
-    results = {
-        "total": 0,
-        "passed": 0,
-        "failed": 0
-    }
-    
-    # ========== TEST 1: Admin Login ==========
-    print("TEST 1: Admin Login")
-    results["total"] += 1
+def test_admin_login():
+    """Test admin login and get token"""
+    print("\n=== TEST 1: Admin Login ===")
     try:
-        response = requests.post(f"{BASE_URL}/auth/login", json={
-            "email": ADMIN_EMAIL,
-            "password": ADMIN_PASSWORD
-        })
-        admin_token = None
-        if response.status_code == 200:
-            data = response.json()
-            admin_token = data.get("token")
-            is_admin = data.get("user", {}).get("isAdmin")
-            if admin_token and is_admin:
-                print_test("Admin login", True, f"Token received, isAdmin={is_admin}")
-                results["passed"] += 1
-            else:
-                print_test("Admin login", False, f"Token or isAdmin missing: {data}")
-                results["failed"] += 1
-        else:
-            print_test("Admin login", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-            return results
+        response = requests.post(
+            f"{API_BASE}/auth/login",
+            json={"email": "admin@robloot.com", "password": "roblootdevtomo"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("Admin login", False, f"HTTP {response.status_code}: {response.text[:200]}")
+        
+        data = response.json()
+        if not data.get('token'):
+            return print_test("Admin login", False, "No token in response")
+        
+        if not data.get('user', {}).get('isAdmin'):
+            return print_test("Admin login", False, "user.isAdmin is not true")
+        
+        print_test("Admin login", True, f"Token received, isAdmin=true")
+        return data['token']
     except Exception as e:
-        print_test("Admin login", False, f"Exception: {e}")
-        results["failed"] += 1
-        return results
+        print_test("Admin login", False, f"Exception: {str(e)}")
+        return None
+
+def test_bot_start_first_call(admin_token):
+    """Test POST /api/admin/dashboard/bot-start - first call"""
+    print("\n=== TEST 2: POST /api/admin/dashboard/bot-start (First Call) ===")
+    try:
+        response = requests.post(
+            f"{API_BASE}/admin/dashboard/bot-start",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=60  # Bot start can take time
+        )
+        
+        if response.status_code != 200:
+            return print_test("bot-start first call", False, f"HTTP {response.status_code}: {response.text[:500]}")
+        
+        data = response.json()
+        
+        # Check required fields
+        if not isinstance(data.get('ok'), bool):
+            return print_test("bot-start first call", False, "Missing 'ok' field")
+        
+        if 'errors' not in data:
+            return print_test("bot-start first call", False, "Missing 'errors' field")
+        
+        if not isinstance(data.get('logs'), list):
+            return print_test("bot-start first call", False, "Missing or invalid 'logs' field")
+        
+        # Check for interactions endpoint success log
+        endpoint_log_found = False
+        error_logs = []
+        
+        for log in data['logs']:
+            if log.get('level') == 'error':
+                error_logs.append(log.get('msg', ''))
+            
+            if log.get('level') == 'success' and 'Interactions endpoint' in log.get('msg', ''):
+                msg = log.get('msg', '')
+                if 'set AND verified by Discord' in msg or 'already set' in msg:
+                    endpoint_log_found = True
+        
+        if error_logs:
+            return print_test("bot-start first call", False, f"Found error logs: {error_logs}")
+        
+        if not endpoint_log_found:
+            return print_test("bot-start first call", False, "No success log about 'Interactions endpoint' found")
+        
+        # Check for other expected success logs
+        expected_keywords = ['Authenticated as', 'Registered', 'Channel']
+        found_keywords = []
+        for keyword in expected_keywords:
+            for log in data['logs']:
+                if log.get('level') == 'success' and keyword in log.get('msg', ''):
+                    found_keywords.append(keyword)
+                    break
+        
+        print_test("bot-start first call", True, 
+                  f"ok={data['ok']}, errors={data['errors']}, logs={len(data['logs'])}, "
+                  f"endpoint_log_found=True, found_keywords={found_keywords}")
+        return True
+    except Exception as e:
+        print_test("bot-start first call", False, f"Exception: {str(e)}")
+        return False
+
+def test_bot_start_idempotency(admin_token):
+    """Test POST /api/admin/dashboard/bot-start - idempotency (second call)"""
+    print("\n=== TEST 3: POST /api/admin/dashboard/bot-start (Idempotency) ===")
+    try:
+        response = requests.post(
+            f"{API_BASE}/admin/dashboard/bot-start",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=60
+        )
+        
+        if response.status_code != 200:
+            return print_test("bot-start idempotency", False, f"HTTP {response.status_code}: {response.text[:500]}")
+        
+        data = response.json()
+        
+        if not data.get('ok'):
+            return print_test("bot-start idempotency", False, f"ok={data.get('ok')}")
+        
+        # Check that endpoint log now says "already set"
+        already_set_found = False
+        for log in data.get('logs', []):
+            if log.get('level') == 'success' and 'Interactions endpoint' in log.get('msg', ''):
+                if 'already set' in log.get('msg', ''):
+                    already_set_found = True
+        
+        if not already_set_found:
+            return print_test("bot-start idempotency", False, 
+                            "Expected 'already set' in interactions endpoint log")
+        
+        print_test("bot-start idempotency", True, "ok=true, endpoint shows 'already set'")
+        return True
+    except Exception as e:
+        print_test("bot-start idempotency", False, f"Exception: {str(e)}")
+        return False
+
+def test_bot_status(admin_token):
+    """Test GET /api/admin/dashboard/bot-status"""
+    print("\n=== TEST 4: GET /api/admin/dashboard/bot-status ===")
+    try:
+        response = requests.get(
+            f"{API_BASE}/admin/dashboard/bot-status",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("bot-status", False, f"HTTP {response.status_code}: {response.text[:500]}")
+        
+        data = response.json()
+        
+        # Check all required fields
+        checks = []
+        
+        # endpointConfigured should be true
+        if data.get('endpointConfigured') != True:
+            checks.append(f"endpointConfigured={data.get('endpointConfigured')} (expected true)")
+        
+        # currentEndpoint should end with /api/discord/interactions
+        current_endpoint = data.get('currentEndpoint', '')
+        if not current_endpoint.endswith('/api/discord/interactions'):
+            checks.append(f"currentEndpoint doesn't end with /api/discord/interactions: {current_endpoint}")
+        
+        # commands should be an array containing both 'claim' and 'embed'
+        commands = data.get('commands', [])
+        if not isinstance(commands, list):
+            checks.append(f"commands is not an array: {type(commands)}")
+        elif 'claim' not in commands:
+            checks.append(f"'claim' not in commands: {commands}")
+        elif 'embed' not in commands:
+            checks.append(f"'embed' not in commands: {commands}")
+        
+        # commandsRegistered should be true
+        if data.get('commandsRegistered') != True:
+            checks.append(f"commandsRegistered={data.get('commandsRegistered')} (expected true)")
+        
+        # publicKeySet should be true
+        if data.get('publicKeySet') != True:
+            checks.append(f"publicKeySet={data.get('publicKeySet')} (expected true)")
+        
+        # tokenValid should be true
+        if data.get('tokenValid') != True:
+            checks.append(f"tokenValid={data.get('tokenValid')} (expected true)")
+        
+        # ready should be true
+        if data.get('ready') != True:
+            checks.append(f"ready={data.get('ready')} (expected true)")
+        
+        if checks:
+            return print_test("bot-status", False, f"Failed checks: {', '.join(checks)}")
+        
+        print_test("bot-status", True, 
+                  f"endpointConfigured=true, currentEndpoint={current_endpoint}, "
+                  f"commands={commands}, commandsRegistered=true, publicKeySet=true, "
+                  f"tokenValid=true, ready=true")
+        return True
+    except Exception as e:
+        print_test("bot-status", False, f"Exception: {str(e)}")
+        return False
+
+def test_bot_start_no_auth():
+    """Test POST /api/admin/dashboard/bot-start without Authorization header"""
+    print("\n=== TEST 5: POST /api/admin/dashboard/bot-start (No Auth) ===")
+    try:
+        response = requests.post(
+            f"{API_BASE}/admin/dashboard/bot-start",
+            timeout=30
+        )
+        
+        if response.status_code != 403:
+            return print_test("bot-start no auth", False, 
+                            f"Expected HTTP 403, got {response.status_code}")
+        
+        print_test("bot-start no auth", True, "HTTP 403 as expected")
+        return True
+    except Exception as e:
+        print_test("bot-start no auth", False, f"Exception: {str(e)}")
+        return False
+
+def test_bot_start_non_admin(non_admin_token):
+    """Test POST /api/admin/dashboard/bot-start with non-admin user token"""
+    print("\n=== TEST 6: POST /api/admin/dashboard/bot-start (Non-Admin User) ===")
+    try:
+        response = requests.post(
+            f"{API_BASE}/admin/dashboard/bot-start",
+            headers={"Authorization": f"Bearer {non_admin_token}"},
+            timeout=30
+        )
+        
+        if response.status_code != 403:
+            return print_test("bot-start non-admin", False, 
+                            f"Expected HTTP 403, got {response.status_code}")
+        
+        print_test("bot-start non-admin", True, "HTTP 403 as expected")
+        return True
+    except Exception as e:
+        print_test("bot-start non-admin", False, f"Exception: {str(e)}")
+        return False
+
+def test_config_regression():
+    """Test GET /api/config regression"""
+    print("\n=== TEST 7: GET /api/config (Regression) ===")
+    try:
+        response = requests.get(f"{API_BASE}/config", timeout=30)
+        
+        if response.status_code != 200:
+            return print_test("config regression", False, f"HTTP {response.status_code}")
+        
+        data = response.json()
+        
+        if data.get('cryptoConfigured') != True:
+            return print_test("config regression", False, 
+                            f"cryptoConfigured={data.get('cryptoConfigured')} (expected true)")
+        
+        print_test("config regression", True, f"cryptoConfigured=true")
+        return True
+    except Exception as e:
+        print_test("config regression", False, f"Exception: {str(e)}")
+        return False
+
+def test_embeds_crud(admin_token):
+    """Test embeds CRUD regression"""
+    print("\n=== TEST 8: Embeds CRUD (Regression) ===")
     
-    # ========== TEST 2: Signup Normal User ==========
-    print("TEST 2: Signup Normal User")
-    results["total"] += 1
+    # Create embed
+    print("  8a. Creating embed...")
+    try:
+        response = requests.post(
+            f"{API_BASE}/admin/dashboard/embeds",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"name": "t18", "title": "hi", "description": "d"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("embeds create", False, f"HTTP {response.status_code}: {response.text[:200]}")
+        
+        data = response.json()
+        embed_id = data.get('embed', {}).get('id')
+        
+        if not embed_id:
+            return print_test("embeds create", False, "No embed id in response")
+        
+        print(f"    Created embed with id: {embed_id}")
+    except Exception as e:
+        return print_test("embeds create", False, f"Exception: {str(e)}")
+    
+    # List embeds
+    print("  8b. Listing embeds...")
+    try:
+        response = requests.get(
+            f"{API_BASE}/admin/dashboard/embeds",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("embeds list", False, f"HTTP {response.status_code}")
+        
+        data = response.json()
+        embeds = data.get('embeds', [])
+        
+        found = False
+        for embed in embeds:
+            if embed.get('id') == embed_id:
+                found = True
+                break
+        
+        if not found:
+            return print_test("embeds list", False, f"Created embed {embed_id} not found in list")
+        
+        print(f"    Found embed in list (total: {len(embeds)})")
+    except Exception as e:
+        return print_test("embeds list", False, f"Exception: {str(e)}")
+    
+    # Delete embed
+    print("  8c. Deleting embed...")
+    try:
+        response = requests.delete(
+            f"{API_BASE}/admin/dashboard/embeds/{embed_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("embeds delete", False, f"HTTP {response.status_code}")
+        
+        print(f"    Deleted embed {embed_id}")
+    except Exception as e:
+        return print_test("embeds delete", False, f"Exception: {str(e)}")
+    
+    # Verify deletion
+    print("  8d. Verifying deletion...")
+    try:
+        response = requests.get(
+            f"{API_BASE}/admin/dashboard/embeds",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return print_test("embeds verify deletion", False, f"HTTP {response.status_code}")
+        
+        data = response.json()
+        embeds = data.get('embeds', [])
+        
+        for embed in embeds:
+            if embed.get('id') == embed_id:
+                return print_test("embeds verify deletion", False, 
+                                f"Embed {embed_id} still exists after deletion")
+        
+        print(f"    Verified embed is gone")
+    except Exception as e:
+        return print_test("embeds verify deletion", False, f"Exception: {str(e)}")
+    
+    print_test("embeds CRUD regression", True, "Create, list, delete all working")
+    return True
+
+def create_non_admin_user():
+    """Create a non-admin user for testing"""
+    print("\n=== Creating Non-Admin User ===")
     try:
         import random
         username = f"testuser{random.randint(10000, 99999)}"
-        response = requests.post(f"{BASE_URL}/auth/signup", json={
-            "username": username,
-            "email": f"{username}@test.com",
-            "password": "testpass123"
-        })
-        normal_token = None
-        if response.status_code == 200:
-            data = response.json()
-            normal_token = data.get("token")
-            if normal_token:
-                print_test("Normal user signup", True, f"Token received for {username}")
-                results["passed"] += 1
-            else:
-                print_test("Normal user signup", False, f"Token missing: {data}")
-                results["failed"] += 1
-        else:
-            print_test("Normal user signup", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("Normal user signup", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 3: EMBEDS CRUD - Create embed with valid data ==========
-    print("TEST 3: Create embed with valid data (admin)")
-    results["total"] += 1
-    embed_id = None
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "welcome",
-                "title": "Hi",
-                "description": "desc",
-                "color": "#22c55e",
-                "fields": [{"name": "a", "value": "b", "inline": True}]
-            })
-        if response.status_code == 200:
-            data = response.json()
-            embed = data.get("embed", {})
-            embed_id = embed.get("id")
-            if embed_id and embed.get("name") == "welcome" and embed.get("title") == "Hi":
-                print_test("Create embed", True, f"Embed created with id={embed_id}, name=welcome, title=Hi")
-                results["passed"] += 1
-            else:
-                print_test("Create embed", False, f"Missing id or incorrect data: {data}")
-                results["failed"] += 1
-        else:
-            print_test("Create embed", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("Create embed", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 4: Create embed without name (should fail) ==========
-    print("TEST 4: Create embed without name (should return 400)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"title": "x"})
-        if response.status_code == 400:
-            print_test("Create embed without name", True, f"Correctly returned 400: {response.json()}")
-            results["passed"] += 1
-        else:
-            print_test("Create embed without name", False, f"Expected 400, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("Create embed without name", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 5: Create embed with name but no title AND no description (should fail) ==========
-    print("TEST 5: Create embed with name but no title AND no description (should return 400)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "nofields"})
-        if response.status_code == 400:
-            print_test("Create embed without title/description", True, f"Correctly returned 400: {response.json()}")
-            results["passed"] += 1
-        else:
-            print_test("Create embed without title/description", False, f"Expected 400, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("Create embed without title/description", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 6: GET embeds (should include welcome) ==========
-    print("TEST 6: GET embeds (should include welcome)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"})
-        if response.status_code == 200:
-            data = response.json()
-            embeds = data.get("embeds", [])
-            welcome_embed = next((e for e in embeds if e.get("name") == "welcome"), None)
-            if welcome_embed:
-                print_test("GET embeds", True, f"Found welcome embed in array of {len(embeds)} embeds")
-                results["passed"] += 1
-            else:
-                print_test("GET embeds", False, f"Welcome embed not found in {len(embeds)} embeds")
-                results["failed"] += 1
-        else:
-            print_test("GET embeds", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GET embeds", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 7: UPSERT-BY-NAME - Re-POST with same name (should edit, not duplicate) ==========
-    print("TEST 7: UPSERT-BY-NAME - Re-POST with same name 'welcome'")
-    results["total"] += 1
-    try:
-        # Get count before
-        response = requests.get(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"})
-        before_count = len([e for e in response.json().get("embeds", []) if e.get("name", "").lower() == "welcome"])
+        email = f"{username}@test.com"
+        password = "testpass123"
         
-        # Re-POST with same name but different title
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "welcome", "title": "Edited"})
+        response = requests.post(
+            f"{API_BASE}/auth/signup",
+            json={"username": username, "email": email, "password": password},
+            timeout=30
+        )
         
-        if response.status_code == 200:
-            # Get count after
-            response = requests.get(f"{BASE_URL}/admin/dashboard/embeds", 
-                headers={"Authorization": f"Bearer {admin_token}"})
-            embeds = response.json().get("embeds", [])
-            after_count = len([e for e in embeds if e.get("name", "").lower() == "welcome"])
-            welcome_embed = next((e for e in embeds if e.get("name", "").lower() == "welcome"), None)
-            
-            if after_count == before_count and welcome_embed and welcome_embed.get("title") == "Edited":
-                print_test("UPSERT-BY-NAME", True, f"Count unchanged ({before_count}), title updated to 'Edited'")
-                results["passed"] += 1
-            else:
-                print_test("UPSERT-BY-NAME", False, f"Count before={before_count}, after={after_count}, title={welcome_embed.get('title') if welcome_embed else 'N/A'}")
-                results["failed"] += 1
-        else:
-            print_test("UPSERT-BY-NAME", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("UPSERT-BY-NAME", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 8: EDIT-BY-ID - POST with id (should edit by id) ==========
-    print("TEST 8: EDIT-BY-ID - POST with id")
-    results["total"] += 1
-    try:
-        if embed_id:
-            response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={"id": embed_id, "name": "welcome", "title": "ById", "description": "desc"})
-            
-            if response.status_code == 200:
-                data = response.json()
-                embed = data.get("embed", {})
-                if embed.get("title") == "ById":
-                    print_test("EDIT-BY-ID", True, f"Title updated to 'ById' for id={embed_id}")
-                    results["passed"] += 1
-                else:
-                    print_test("EDIT-BY-ID", False, f"Title not updated: {embed.get('title')}")
-                    results["failed"] += 1
-            else:
-                print_test("EDIT-BY-ID", False, f"HTTP {response.status_code}: {response.text}")
-                results["failed"] += 1
-        else:
-            print_test("EDIT-BY-ID", False, "No embed_id available from previous test")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("EDIT-BY-ID", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 9: DELETE embed ==========
-    print("TEST 9: DELETE embed")
-    results["total"] += 1
-    try:
-        if embed_id:
-            response = requests.delete(f"{BASE_URL}/admin/dashboard/embeds/{embed_id}", 
-                headers={"Authorization": f"Bearer {admin_token}"})
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    # Verify it's gone
-                    response = requests.get(f"{BASE_URL}/admin/dashboard/embeds", 
-                        headers={"Authorization": f"Bearer {admin_token}"})
-                    embeds = response.json().get("embeds", [])
-                    deleted_embed = next((e for e in embeds if e.get("id") == embed_id), None)
-                    if not deleted_embed:
-                        print_test("DELETE embed", True, f"Embed {embed_id} successfully deleted and not in GET")
-                        results["passed"] += 1
-                    else:
-                        print_test("DELETE embed", False, f"Embed {embed_id} still exists after DELETE")
-                        results["failed"] += 1
-                else:
-                    print_test("DELETE embed", False, f"success=false: {data}")
-                    results["failed"] += 1
-            else:
-                print_test("DELETE embed", False, f"HTTP {response.status_code}: {response.text}")
-                results["failed"] += 1
-        else:
-            print_test("DELETE embed", False, "No embed_id available from previous test")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("DELETE embed", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 10-13: GUARDS - Non-admin user ==========
-    print("TEST 10: GUARD - GET embeds with non-admin token (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {normal_token}"})
-        if response.status_code == 403:
-            print_test("GUARD - GET embeds (non-admin)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - GET embeds (non-admin)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - GET embeds (non-admin)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 11: GUARD - POST embeds with non-admin token (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {normal_token}"},
-            json={"name": "test", "title": "test"})
-        if response.status_code == 403:
-            print_test("GUARD - POST embeds (non-admin)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - POST embeds (non-admin)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - POST embeds (non-admin)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 12: GUARD - GET bot-status with non-admin token (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/bot-status", 
-            headers={"Authorization": f"Bearer {normal_token}"})
-        if response.status_code == 403:
-            print_test("GUARD - GET bot-status (non-admin)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - GET bot-status (non-admin)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - GET bot-status (non-admin)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 13: GUARD - POST register-commands with non-admin token (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/register-commands", 
-            headers={"Authorization": f"Bearer {normal_token}"})
-        if response.status_code == 403:
-            print_test("GUARD - POST register-commands (non-admin)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - POST register-commands (non-admin)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - POST register-commands (non-admin)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 14-17: GUARDS - No auth header ==========
-    print("TEST 14: GUARD - GET embeds with no auth (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/embeds")
-        if response.status_code == 403:
-            print_test("GUARD - GET embeds (no auth)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - GET embeds (no auth)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - GET embeds (no auth)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 15: GUARD - POST embeds with no auth (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            json={"name": "test", "title": "test"})
-        if response.status_code == 403:
-            print_test("GUARD - POST embeds (no auth)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - POST embeds (no auth)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - POST embeds (no auth)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 16: GUARD - GET bot-status with no auth (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/bot-status")
-        if response.status_code == 403:
-            print_test("GUARD - GET bot-status (no auth)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - GET bot-status (no auth)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - GET bot-status (no auth)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    print("TEST 17: GUARD - POST register-commands with no auth (should return 403)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/register-commands")
-        if response.status_code == 403:
-            print_test("GUARD - POST register-commands (no auth)", True, f"Correctly returned 403")
-            results["passed"] += 1
-        else:
-            print_test("GUARD - POST register-commands (no auth)", False, f"Expected 403, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GUARD - POST register-commands (no auth)", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 18: BOT STATUS (admin) ==========
-    print("TEST 18: GET bot-status (admin)")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/admin/dashboard/bot-status", 
-            headers={"Authorization": f"Bearer {admin_token}"})
-        if response.status_code == 200:
-            data = response.json()
-            required_keys = ["tokenValid", "botUsername", "publicKeySet", "commandsRegistered", "commands", "ready"]
-            missing_keys = [k for k in required_keys if k not in data]
-            
-            if not missing_keys:
-                token_valid = data.get("tokenValid")
-                bot_username = data.get("botUsername")
-                public_key_set = data.get("publicKeySet")
-                commands_registered = data.get("commandsRegistered")
-                commands = data.get("commands", [])
-                ready = data.get("ready")
-                
-                has_embed = "embed" in commands
-                has_claim = "claim" in commands
-                
-                if token_valid and bot_username and public_key_set and commands_registered and has_embed and has_claim and ready:
-                    print_test("GET bot-status", True, 
-                        f"tokenValid={token_valid}, botUsername={bot_username}, publicKeySet={public_key_set}, "
-                        f"commandsRegistered={commands_registered}, commands={commands}, ready={ready}")
-                    results["passed"] += 1
-                else:
-                    print_test("GET bot-status", False, 
-                        f"Some values not as expected: tokenValid={token_valid}, botUsername={bot_username}, "
-                        f"publicKeySet={public_key_set}, commandsRegistered={commands_registered}, "
-                        f"has_embed={has_embed}, has_claim={has_claim}, ready={ready}")
-                    results["failed"] += 1
-            else:
-                print_test("GET bot-status", False, f"Missing keys: {missing_keys}")
-                results["failed"] += 1
-        else:
-            print_test("GET bot-status", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("GET bot-status", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 19: REGISTER COMMANDS (admin) ==========
-    print("TEST 19: POST register-commands (admin)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/register-commands", 
-            headers={"Authorization": f"Bearer {admin_token}"})
-        if response.status_code == 200:
-            data = response.json()
-            success = data.get("success")
-            commands = data.get("commands", [])
-            
-            has_embed = "embed" in commands
-            has_claim = "claim" in commands
-            
-            if success and has_embed and has_claim:
-                print_test("POST register-commands", True, f"success={success}, commands={commands}")
-                results["passed"] += 1
-            else:
-                print_test("POST register-commands", False, 
-                    f"success={success}, has_embed={has_embed}, has_claim={has_claim}, commands={commands}")
-                results["failed"] += 1
-        else:
-            print_test("POST register-commands", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("POST register-commands", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 20: POST-TO-CHANNEL - Create a new embed for posting ==========
-    print("TEST 20: Create embed for post-to-channel test")
-    results["total"] += 1
-    post_embed_id = None
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "test_post",
-                "title": "Test Post to Channel",
-                "description": "This is a test embed for posting to Discord channel",
-                "color": "#3b82f6"
-            })
-        if response.status_code == 200:
-            data = response.json()
-            post_embed_id = data.get("embed", {}).get("id")
-            if post_embed_id:
-                print_test("Create embed for posting", True, f"Embed created with id={post_embed_id}")
-                results["passed"] += 1
-            else:
-                print_test("Create embed for posting", False, f"No id in response: {data}")
-                results["failed"] += 1
-        else:
-            print_test("Create embed for posting", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("Create embed for posting", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 21: POST-TO-CHANNEL - Post embed to Discord channel ==========
-    print("TEST 21: POST embed to Discord channel")
-    results["total"] += 1
-    try:
-        if post_embed_id:
-            response = requests.post(f"{BASE_URL}/admin/dashboard/embeds/{post_embed_id}/post", 
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={})
-            
-            if response.status_code == 200:
-                data = response.json()
-                success = data.get("success")
-                message_id = data.get("messageId")
-                
-                if success and message_id:
-                    print_test("POST embed to channel", True, f"success={success}, messageId={message_id}")
-                    results["passed"] += 1
-                else:
-                    print_test("POST embed to channel", False, f"success={success}, messageId={message_id}")
-                    results["failed"] += 1
-            else:
-                print_test("POST embed to channel", False, f"HTTP {response.status_code}: {response.text}")
-                results["failed"] += 1
-        else:
-            print_test("POST embed to channel", False, "No post_embed_id available")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("POST embed to channel", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 22: POST-TO-CHANNEL - Post nonexistent embed (should return 404) ==========
-    print("TEST 22: POST nonexistent embed to channel (should return 404)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/admin/dashboard/embeds/nonexistent-id/post", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={})
+        if response.status_code != 200:
+            print(f"  Failed to create non-admin user: HTTP {response.status_code}")
+            return None
         
-        if response.status_code == 404:
-            print_test("POST nonexistent embed", True, f"Correctly returned 404: {response.json()}")
-            results["passed"] += 1
-        else:
-            print_test("POST nonexistent embed", False, f"Expected 404, got HTTP {response.status_code}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("POST nonexistent embed", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 23: INTERACTIONS KEY CHECK - POST with no signature (should return 401) ==========
-    print("TEST 23: POST /discord/interactions with no signature (should return 401)")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/discord/interactions", 
-            json={"type": 1})
+        data = response.json()
+        token = data.get('token')
         
-        if response.status_code == 401:
-            print_test("INTERACTIONS key check", True, f"Correctly returned 401 (DISCORD_PUBLIC_KEY is configured)")
-            results["passed"] += 1
-        else:
-            print_test("INTERACTIONS key check", False, 
-                f"Expected 401, got HTTP {response.status_code}. Response: {response.text}")
-            results["failed"] += 1
+        if not token:
+            print(f"  No token in signup response")
+            return None
+        
+        print(f"  Created non-admin user: {username}")
+        return token
     except Exception as e:
-        print_test("INTERACTIONS key check", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 24: REGRESSION - GET /config ==========
-    print("TEST 24: REGRESSION - GET /config")
-    results["total"] += 1
-    try:
-        response = requests.get(f"{BASE_URL}/config")
-        if response.status_code == 200:
-            data = response.json()
-            crypto_configured = data.get("cryptoConfigured")
-            provider = data.get("provider")
-            
-            if crypto_configured == True and provider == "blockbee":
-                print_test("REGRESSION - GET /config", True, 
-                    f"cryptoConfigured={crypto_configured}, provider={provider}")
-                results["passed"] += 1
-            else:
-                print_test("REGRESSION - GET /config", False, 
-                    f"cryptoConfigured={crypto_configured}, provider={provider}")
-                results["failed"] += 1
-        else:
-            print_test("REGRESSION - GET /config", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("REGRESSION - GET /config", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== TEST 25: REGRESSION - Admin login returns isAdmin=true ==========
-    print("TEST 25: REGRESSION - Admin login returns isAdmin=true")
-    results["total"] += 1
-    try:
-        response = requests.post(f"{BASE_URL}/auth/login", json={
-            "email": ADMIN_EMAIL,
-            "password": ADMIN_PASSWORD
-        })
-        if response.status_code == 200:
-            data = response.json()
-            is_admin = data.get("user", {}).get("isAdmin")
-            
-            if is_admin == True:
-                print_test("REGRESSION - Admin login isAdmin", True, f"isAdmin={is_admin}")
-                results["passed"] += 1
-            else:
-                print_test("REGRESSION - Admin login isAdmin", False, f"isAdmin={is_admin}")
-                results["failed"] += 1
-        else:
-            print_test("REGRESSION - Admin login isAdmin", False, f"HTTP {response.status_code}: {response.text}")
-            results["failed"] += 1
-    except Exception as e:
-        print_test("REGRESSION - Admin login isAdmin", False, f"Exception: {e}")
-        results["failed"] += 1
-    
-    # ========== SUMMARY ==========
+        print(f"  Exception creating non-admin user: {str(e)}")
+        return None
+
+def main():
     print("=" * 80)
+    print("UPDATE 18 BACKEND TEST: Discord Bot 'Application Did Not Respond' Fix")
+    print("Testing bot-start endpoint auto-setting Discord interactions endpoint URL")
+    print("=" * 80)
+    
+    results = []
+    
+    # Test 1: Admin login
+    admin_token = test_admin_login()
+    if not admin_token:
+        print("\n❌ CRITICAL: Admin login failed. Cannot continue tests.")
+        sys.exit(1)
+    results.append(True)
+    
+    # Test 2: bot-start first call
+    results.append(test_bot_start_first_call(admin_token))
+    
+    # Test 3: bot-start idempotency
+    results.append(test_bot_start_idempotency(admin_token))
+    
+    # Test 4: bot-status
+    results.append(test_bot_status(admin_token))
+    
+    # Test 5: bot-start no auth
+    results.append(test_bot_start_no_auth())
+    
+    # Create non-admin user for test 6
+    non_admin_token = create_non_admin_user()
+    if non_admin_token:
+        # Test 6: bot-start non-admin
+        results.append(test_bot_start_non_admin(non_admin_token))
+    else:
+        print("\n⚠️  WARNING: Could not create non-admin user, skipping non-admin test")
+        results.append(False)
+    
+    # Test 7: config regression
+    results.append(test_config_regression())
+    
+    # Test 8: embeds CRUD regression
+    results.append(test_embeds_crud(admin_token))
+    
+    # Summary
+    print("\n" + "=" * 80)
     print("TEST SUMMARY")
     print("=" * 80)
-    print(f"Total tests: {results['total']}")
-    print(f"Passed: {results['passed']}")
-    print(f"Failed: {results['failed']}")
-    print(f"Success rate: {(results['passed']/results['total']*100):.1f}%")
-    print("=" * 80)
+    passed = sum(results)
+    total = len(results)
+    print(f"Passed: {passed}/{total}")
     
-    return results
+    if passed == total:
+        print("\n✅ ALL TESTS PASSED")
+        sys.exit(0)
+    else:
+        print(f"\n❌ {total - passed} TEST(S) FAILED")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    results = main()
-    sys.exit(0 if results["failed"] == 0 else 1)
+    main()

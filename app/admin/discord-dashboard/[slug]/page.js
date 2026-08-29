@@ -319,6 +319,7 @@ export default function DiscordDashboardPage() {
                   <SecretRow label="Bot token valid" ok={botStatus?.tokenValid} note={botStatus?.tokenValid ? botStatus?.botUsername : 'Save/replace token below'} />
                   <SecretRow label="Public key configured (DISCORD_PUBLIC_KEY)" ok={botStatus?.publicKeySet} note="Verifies incoming slash commands" />
                   <SecretRow label="Slash commands registered" ok={botStatus?.commandsRegistered} note={botStatus?.commands?.length ? botStatus.commands.map(c => '/' + c).join('  ') : 'Click Register'} />
+                  <SecretRow label="Interactions endpoint set on Discord" ok={botStatus?.endpointConfigured} note={botStatus?.endpointConfigured ? 'Verified — commands are live' : 'Run Bot Console → Start bot to set it'} />
                 </div>
                 <div className="flex items-center gap-2 mt-4">
                   <Btn onClick={registerCommands} disabled={registering}>{registering && <Loader2 className="w-4 h-4 animate-spin mr-1 inline" />}Register slash commands</Btn>

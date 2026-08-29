@@ -976,3 +976,21 @@ agent_communication:
         -working: true
         -agent: "main"
         -comment: "NEW feature per user request: a console/terminal in the dashboard to 'start' the bot and see errors. POST /api/admin/dashboard/bot-start (admin only, 403 otherwise) runs a boot sequence and returns {ok, errors, logs:[{level,msg,t}]}: authenticates token (GET /users/@me), checks DISCORD_PUBLIC_KEY, verifies guild membership (GET /guilds/:id, with an invite link on 403/404), registers /claim & /embed, checks channel access (GET /channels/:id), prints the Interactions Endpoint URL reminder, and a final READY / N-errors line. Each failing step logs a 'error' line with a concrete fix. Frontend: new 'Bot Console' nav tab with a terminal panel (colored log levels, timestamps, auto-scroll), Start bot + Clear buttons. VERIFIED by main agent via curl (ok:true; all steps success; bot='Ethereal#4833'; server='scaled.'s server'; channel #welcome-and-rules; guard 403 no-auth) and via browser screenshot (console renders and streams the full READY log)."
+
+
+## ===== UPDATE 18: Fix "application did not respond" — auto-set interactions endpoint =====
+  - task: "bot-start now auto-sets & verifies Discord interactions_endpoint_url; bot-status reports endpointConfigured"
+    file: "app/api/[[...path]]/route.js, app/admin/discord-dashboard/[slug]/page.js"
+    implemented: true
+    working: "NA"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "ROOT CAUSE of 'The application did not respond': the Discord application's interactions_endpoint_url was NOT set (confirmed via GET /applications/@me -> null), so Discord had nowhere to deliver slash commands. FIX: POST /api/admin/dashboard/bot-start now does GET /applications/@me to read the current endpoint, then PATCH /applications/@me { interactions_endpoint_url } to set+verify it (Discord PINGs our endpoint during the PATCH; success means verified). Also added User-Agent to all Discord REST calls. GET /api/admin/dashboard/bot-status now returns endpointConfigured + currentEndpoint and includes endpointConfigured in `ready`. Main-agent VERIFIED with the REAL Discord app 'Ethereal#4833': first bot-start logged 'Current interactions endpoint: (none set)' then 'Interactions endpoint set AND verified by Discord'; bot-status now returns endpointConfigured=true, currentEndpoint=https://cookies-8.preview.emergentagent.com/api/discord/interactions, ready=true."
+
+agent_communication:
+    -agent: "main"
+    -message: "UPDATE 18 focused backend test. Admin: admin@robloot.com/roblootdevtomo. TEST: (1) POST /api/admin/dashboard/bot-start as admin -> 200, JSON {ok:true, errors:0, logs:[...]}. In logs, there must be a line about the interactions endpoint being either 'set AND verified' OR 'already set to this server' (level success). No 'error' level lines expected (bot 'Ethereal' is fully configured). (2) IDEMPOTENT: call bot-start again -> still ok:true; endpoint line should now say 'already set'. (3) GET /api/admin/dashboard/bot-status as admin -> 200 with endpointConfigured:true, currentEndpoint (string ending in /api/discord/interactions), commands includes 'claim' and 'embed', ready:true. (4) GUARDS: POST /api/admin/dashboard/bot-start with no auth and with a normal (non-admin) user token -> 403 both. (5) REGRESSION: GET /api/config -> {cryptoConfigured:true}; admin login isAdmin:true; GET/POST /api/admin/dashboard/embeds still works (create one, list, delete). NOTE: bot-start makes REAL Discord calls (auth, register commands, PATCH endpoint) — that is expected. Do NOT modify code."

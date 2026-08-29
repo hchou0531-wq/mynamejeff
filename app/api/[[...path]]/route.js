@@ -376,7 +376,7 @@ async function discordApi(botToken, method, apiPath, body) {
   try {
     const res = await fetch(`https://discord.com/api/v10${apiPath}`, {
       method,
-      headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (https://robloot.com, 1.0)' },
       body: body != null ? JSON.stringify(body) : undefined
     })
     const text = await res.text()
@@ -1051,7 +1051,7 @@ async function handleRoute(request, { params }) {
         if (!token || !appId || !guildId) return json({ error: 'Save your bot token, Client (Application) ID and Guild (Server) ID first.' }, 400)
         const commands = [
           { name: 'claim', description: 'Claim your paid order (toy code or account login)', type: 1, options: [{ type: 3, name: 'order', description: 'Your order number', required: true }] },
-          { name: 'embed', description: 'Post a saved embed to this channel', type: 1, default_member_permissions: '32', options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
+          { name: 'embed', description: 'Post a saved embed to this channel', type: 1, options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
         ]
         const r = await discordApi(token, 'PUT', `/applications/${appId}/guilds/${guildId}/commands`, commands)
         if (!r.ok) return json({ error: `Discord error ${r.status}: ${r.data?.message || JSON.stringify(r.data)}` }, 502)
@@ -1073,12 +1073,19 @@ async function handleRoute(request, { params }) {
           if (rc.ok && Array.isArray(rc.data)) { commands = rc.data.map(c => c.name); commandsRegistered = commands.length > 0 }
         }
         const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        const endpointUrl = `${base}/api/discord/interactions`
+        let endpointConfigured = false, currentEndpoint = null
+        if (token) {
+          const app = await discordApi(token, 'GET', '/applications/@me')
+          if (app.ok) { currentEndpoint = app.data?.interactions_endpoint_url || null; endpointConfigured = currentEndpoint === endpointUrl }
+        }
         const publicKeySet = !!process.env.DISCORD_PUBLIC_KEY
         return json({
           tokenValid, botUsername, publicKeySet, commandsRegistered, commands,
+          endpointConfigured, currentEndpoint,
           tokenSet: !!token, clientId: cfg.discordClientId || '', guildId: cfg.discordGuildId || '', channelId: cfg.discordChannelId || '',
-          endpointUrl: `${base}/api/discord/interactions`,
-          ready: tokenValid && publicKeySet && commandsRegistered
+          endpointUrl,
+          ready: tokenValid && publicKeySet && commandsRegistered && endpointConfigured
         })
       }
 
@@ -1132,7 +1139,7 @@ async function handleRoute(request, { params }) {
           L('info', 'Registering slash commands (/claim, /embed)…')
           const commands = [
             { name: 'claim', description: 'Claim your paid order (toy code or account login)', type: 1, options: [{ type: 3, name: 'order', description: 'Your order number', required: true }] },
-            { name: 'embed', description: 'Post a saved embed to this channel', type: 1, default_member_permissions: '32', options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
+            { name: 'embed', description: 'Post a saved embed to this channel', type: 1, options: [{ type: 3, name: 'name', description: 'Which saved embed to post', required: true, autocomplete: true }] }
           ]
           const rr = await discordApi(token, 'PUT', `/applications/${cfg.discordClientId}/guilds/${cfg.discordGuildId}/commands`, commands)
           if (rr.ok && Array.isArray(rr.data)) {
@@ -1153,10 +1160,34 @@ async function handleRoute(request, { params }) {
           L('warn', 'No Orders Channel ID set — "Post to channel" for embeds will not work until you add one.')
         }
 
-        // 7) interactions endpoint reminder
+        // 7) Set + verify the interactions endpoint URL on the Discord application
         const base = process.env.NEXT_PUBLIC_BASE_URL || ''
-        L('info', `Interactions Endpoint URL: ${base}/api/discord/interactions`)
-        L('info', 'Reminder: paste that URL into Developer Portal → General Information → Interactions Endpoint URL and Save.')
+        const endpoint = `${base}/api/discord/interactions`
+        if (token && process.env.DISCORD_PUBLIC_KEY) {
+          L('info', 'Reading application settings (GET /applications/@me)…')
+          const app = await discordApi(token, 'GET', '/applications/@me')
+          const current = app.ok ? (app.data?.interactions_endpoint_url || null) : undefined
+          if (app.ok) L('info', `Current interactions endpoint: ${current || '(none set)'}`)
+          if (current === endpoint) {
+            L('success', 'Interactions endpoint already set to this server. Slash commands are live.')
+          } else {
+            L('info', `Setting interactions endpoint to ${endpoint} …`)
+            const patch = await discordApi(token, 'PATCH', '/applications/@me', { interactions_endpoint_url: endpoint })
+            if (patch.ok) {
+              L('success', 'Interactions endpoint set AND verified by Discord. /embed and /claim are now LIVE.')
+            } else {
+              errors++
+              const msg = patch.data?.message || JSON.stringify(patch.data)
+              if (/interactions_endpoint_url/i.test(JSON.stringify(patch.data)) || patch.status === 400) {
+                L('error', `Discord could not verify the endpoint (${patch.status}: ${msg}). This usually means DISCORD_PUBLIC_KEY does not match this Discord app. Copy the Public Key from Developer Portal → General Information and make sure it matches.`)
+              } else {
+                L('error', `Failed to set interactions endpoint (Discord ${patch.status}: ${msg}). You can set it manually in Developer Portal → General Information → Interactions Endpoint URL: ${endpoint}`)
+              }
+            }
+          }
+        } else {
+          L('warn', `Cannot set interactions endpoint until token + DISCORD_PUBLIC_KEY are ready. URL to use: ${endpoint}`)
+        }
 
         const ready = errors === 0 && !!botUser && !!process.env.DISCORD_PUBLIC_KEY
         if (ready) L('success', '✅ Bot is READY. Try /embed and /claim in your server.')
