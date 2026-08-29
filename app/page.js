@@ -15,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
   Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
-  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock
+  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
@@ -140,6 +140,7 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1 ml-2">
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse')}>Browse</Button>
             <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('browse', { category: 'Limiteds' })}>Limiteds</Button>
+            <Button variant="ghost" className="text-slate-300 hover:text-white" onClick={() => go('reviews')}>Reviews</Button>
             {user?.isAdmin && <Button variant="ghost" className="text-fuchsia-300 hover:text-fuchsia-200" onClick={() => go('admin')}>Admin</Button>}
           </nav>
           <div className="flex-1" />
@@ -170,6 +171,7 @@ export default function App() {
         {view.name === 'item' && <ItemView api={api} go={go} listingId={view.listingId} user={user} requireAuth={requireAuth} cfg={cfg} />}
         {view.name === 'order' && <OrderStatusView api={api} go={go} orderId={view.orderId} refreshNotifs={loadNotifs} cfg={cfg} />}
         {view.name === 'seller' && <SellerView api={api} go={go} name={view.username} />}
+        {view.name === 'reviews' && <ReviewsView api={api} />}
         {view.name === 'dashboard' && (user ? <DashboardView api={api} go={go} user={user} /> : <EmptyAuth onLogin={() => { setAuthMode('login'); setAuthOpen(true) }} />)}
         {view.name === 'admin' && <AdminView api={api} user={user} go={go} cfg={cfg} />}
       </main>
@@ -1032,6 +1034,86 @@ function DashboardView({ api, go, user }) {
 }
 
 // ================= Admin =================
+function VerifiedFooter({ className = '' }) {
+  return (
+    <div className={`flex items-center justify-center gap-1.5 text-xs text-slate-500 ${className}`}>
+      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+      <span>Verified on</span>
+      <span className="font-semibold text-slate-300">eBay</span>
+      <span>+</span>
+      <span className="font-semibold text-slate-300">SellAuth</span>
+    </div>
+  )
+}
+
+function ReviewCard({ r }) {
+  const neg = r.rating === 'negative'
+  const neu = r.rating === 'neutral'
+  const Icon = neg ? ThumbsDown : neu ? AlertTriangle : ThumbsUp
+  const ring = neg ? 'border-red-500/25' : neu ? 'border-amber-500/25' : 'border-emerald-500/20'
+  const chip = neg ? 'bg-red-500/15 text-red-300' : neu ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'
+  return (
+    <Card className={`p-4 bg-[#12101f]/60 ${ring} flex flex-col gap-3`}>
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${chip}`}><Icon className="w-3.5 h-3.5" /> {neg ? 'Negative' : neu ? 'Neutral' : 'Positive'}</span>
+        {r.source === 'ebay'
+          ? <span className="text-[10px] uppercase tracking-wider text-slate-500 flex items-center gap-1"><BadgeCheck className="w-3 h-3 text-sky-400" /> eBay</span>
+          : <span className="text-[10px] uppercase tracking-wider text-slate-500">Verified</span>}
+      </div>
+      <div className="relative">
+        <Quote className="w-4 h-4 text-white/10 absolute -top-1 -left-1" />
+        <p className="text-sm text-slate-200 leading-relaxed pl-4">{r.comment}</p>
+      </div>
+      {r.item && <p className="text-xs text-slate-500 truncate">Item: {r.item}</p>}
+      <div className="flex items-center justify-between text-xs text-slate-400 mt-auto pt-1 border-t border-white/5">
+        <span className="font-semibold text-slate-300">{r.author || 'Buyer'}</span>
+        {r.period && <span className="text-slate-500">{r.period}</span>}
+      </div>
+    </Card>
+  )
+}
+
+function ReviewsView({ api }) {
+  const [data, setData] = useState(null)
+  useEffect(() => { api('/reviews').then(setData).catch(e => toast.error(e.message)) }, [api])
+  if (!data) return <div className="container mx-auto px-4 py-32 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-violet-400" /></div>
+  const reviews = data.reviews || []
+  const positives = reviews.filter(r => r.rating === 'positive').length
+  const pct = reviews.length ? Math.round((positives / reviews.length) * 100) : 100
+
+  return (
+    <div className="container mx-auto px-4 py-12 max-w-5xl">
+      {/* Total sales */}
+      <div className="text-center">
+        <p className="text-xs uppercase tracking-[0.25em] text-slate-400 mb-2">Total Sales</p>
+        <p className="text-6xl md:text-7xl font-black bg-gradient-to-r from-violet-300 via-fuchsia-300 to-amber-200 bg-clip-text text-transparent leading-none">{Number(data.totalSales || 0).toLocaleString()}</p>
+        <VerifiedFooter className="mt-4" />
+      </div>
+
+      {/* quick stats */}
+      <div className="grid grid-cols-3 gap-3 max-w-lg mx-auto mt-10">
+        <Card className="p-4 bg-[#12101f]/60 border-white/5 text-center"><p className="text-2xl font-black text-emerald-300">{pct}%</p><p className="text-[11px] uppercase tracking-wider text-slate-500 mt-1">Positive</p></Card>
+        <Card className="p-4 bg-[#12101f]/60 border-white/5 text-center"><p className="text-2xl font-black text-violet-300">{reviews.length}</p><p className="text-[11px] uppercase tracking-wider text-slate-500 mt-1">Reviews</p></Card>
+        <Card className="p-4 bg-[#12101f]/60 border-white/5 text-center"><p className="text-2xl font-black text-amber-300 flex items-center justify-center gap-1"><Star className="w-5 h-5 fill-amber-300" /></p><p className="text-[11px] uppercase tracking-wider text-slate-500 mt-1">Trusted</p></Card>
+      </div>
+
+      {/* Reviews */}
+      <div className="mt-14">
+        <h2 className="text-2xl font-black mb-1 text-center">Customer Reviews</h2>
+        <p className="text-sm text-slate-400 mb-8 text-center">Real feedback from completed orders.</p>
+        {reviews.length === 0 ? (
+          <p className="text-center text-slate-500 py-12">No reviews yet. Check back soon.</p>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {reviews.map(r => <ReviewCard key={r.id} r={r} />)}
+          </div>
+        )}
+        <VerifiedFooter className="mt-10" />
+      </div>
+    </div>
+  )
+}
+
 function AdminView({ api, user, go, cfg }) {
   const [tab, setTab] = useState('listings')
   const [stats, setStats] = useState(null)
@@ -1046,13 +1128,36 @@ function AdminView({ api, user, go, cfg }) {
   const [importOpen, setImportOpen] = useState(false)
   const [editL, setEditL] = useState(null)
   const [vendorOpen, setVendorOpen] = useState(false)
+  const [reviews, setReviews] = useState([])
+  const [totalSales, setTotalSales] = useState(0)
+  const [salesInput, setSalesInput] = useState('')
+  const [ebayUrl, setEbayUrl] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [newReview, setNewReview] = useState({ author: '', comment: '', rating: 'positive', item: '' })
+
+  const loadReviews = useCallback(async () => {
+    try { const rv = await api('/reviews'); setReviews(rv.reviews || []); setTotalSales(rv.totalSales || 0); setSalesInput(String(rv.totalSales || 0)) } catch (e) {}
+  }, [api])
+  const saveTotalSales = async () => { try { const d = await api('/admin/reviews/settings', { method: 'POST', body: JSON.stringify({ totalSales: Number(salesInput) }) }); setTotalSales(d.totalSales); toast.success('Total sales updated') } catch (e) { toast.error(e.message) } }
+  const importEbay = async () => {
+    if (!ebayUrl.trim()) { toast.error('Paste an eBay feedback profile URL'); return }
+    setImporting(true)
+    try { const d = await api('/admin/reviews/import-ebay', { method: 'POST', body: JSON.stringify({ url: ebayUrl.trim(), setTotalSales: true }) }); toast.success(`Imported ${d.imported} review(s)${d.skipped ? `, skipped ${d.skipped} duplicate(s)` : ''}${d.feedbackScore != null ? ` · eBay score ${d.feedbackScore}` : ''}`); await loadReviews() }
+    catch (e) { toast.error(e.message) } finally { setImporting(false) }
+  }
+  const addReview = async () => {
+    if (!newReview.comment.trim()) { toast.error('Enter a review comment'); return }
+    try { await api('/admin/reviews', { method: 'POST', body: JSON.stringify({ ...newReview, source: 'manual' }) }); toast.success('Review added'); setNewReview({ author: '', comment: '', rating: 'positive', item: '' }); await loadReviews() } catch (e) { toast.error(e.message) }
+  }
+  const deleteReview = async (id) => { try { await api(`/admin/reviews/${id}`, { method: 'DELETE' }); await loadReviews() } catch (e) { toast.error(e.message) } }
 
   const load = useCallback(async () => {
     try {
       const [s, i, v, l, o, u, r] = await Promise.all([api('/admin/stats'), api('/admin/items'), api('/admin/vendors'), api('/admin/listings'), api('/admin/orders'), api('/admin/users'), api('/admin/reports')])
       setStats(s); setItems(i.items); setVendors(v.vendors); setListings(l.listings); setOrders(o.orders); setUsers(u.users); setReports(r.reports)
+      await loadReviews()
     } catch (e) {}
-  }, [api])
+  }, [api, loadReviews])
   useEffect(() => { if (user?.isAdmin) load() }, [load, user])
 
   if (!user || !user.isAdmin) {
@@ -1085,7 +1190,7 @@ function AdminView({ api, user, go, cfg }) {
         ))}
       </div>
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="bg-[#12101f] border border-white/5 flex-wrap h-auto"><TabsTrigger value="listings">Listings</TabsTrigger><TabsTrigger value="items">Items</TabsTrigger><TabsTrigger value="orders">Transactions</TabsTrigger><TabsTrigger value="users">Users</TabsTrigger><TabsTrigger value="reports">Reports</TabsTrigger><TabsTrigger value="profiles"><User className="w-3.5 h-3.5 mr-1" /> Profiles</TabsTrigger></TabsList>
+        <TabsList className="bg-[#12101f] border border-white/5 flex-wrap h-auto"><TabsTrigger value="listings">Listings</TabsTrigger><TabsTrigger value="items">Items</TabsTrigger><TabsTrigger value="orders">Transactions</TabsTrigger><TabsTrigger value="users">Users</TabsTrigger><TabsTrigger value="reports">Reports</TabsTrigger><TabsTrigger value="reviews"><MessageSquare className="w-3.5 h-3.5 mr-1" /> Reviews</TabsTrigger><TabsTrigger value="profiles"><User className="w-3.5 h-3.5 mr-1" /> Profiles</TabsTrigger></TabsList>
 
         <TabsContent value="listings" className="mt-4 space-y-2">
           {listings.length === 0 && <Empty text="No listings yet. Click 'Import from Roblox' to add one." />}
@@ -1145,6 +1250,61 @@ function AdminView({ api, user, go, cfg }) {
               {r.status === 'open' && <Button size="sm" onClick={() => resolveReport(r.id)}>Resolve</Button>}
             </Card>
           ))}
+        </TabsContent>
+
+        <TabsContent value="reviews" className="mt-4 space-y-5">
+          {/* Total sales */}
+          <Card className="p-4 bg-[#12101f]/60 border-white/5">
+            <Label className="text-xs text-slate-400">Total Sales (shown on the public Reviews page)</Label>
+            <div className="flex items-center gap-2 mt-2">
+              <Input type="number" value={salesInput} onChange={e => setSalesInput(e.target.value)} placeholder="e.g. 1240" className="bg-black/30 border-white/10 max-w-[200px]" />
+              <Button onClick={saveTotalSales} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Save</Button>
+              <span className="text-xs text-slate-500">Current: <span className="text-slate-300 font-semibold">{Number(totalSales).toLocaleString()}</span></span>
+            </div>
+          </Card>
+
+          {/* eBay import */}
+          <Card className="p-4 bg-[#12101f]/60 border-white/5">
+            <div className="flex items-center gap-2 mb-2"><Upload className="w-4 h-4 text-emerald-400" /><h3 className="font-bold text-sm">Auto-detect from eBay feedback</h3></div>
+            <p className="text-xs text-slate-400 mb-3">Paste your eBay feedback profile URL. We'll import received-as-seller feedback and set Total Sales from your eBay feedback score.</p>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <Input value={ebayUrl} onChange={e => setEbayUrl(e.target.value)} placeholder="https://www.ebay.com/fdbk/feedback_profile/USERNAME?filter=feedback_page%3ARECEIVED_AS_SELLER" className="bg-black/30 border-white/10 flex-1" />
+              <Button onClick={importEbay} disabled={importing} className="bg-gradient-to-r from-emerald-500 to-teal-600 font-semibold">{importing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Detecting...</> : <><Upload className="w-4 h-4 mr-2" /> Detect &amp; Import</>}</Button>
+            </div>
+          </Card>
+
+          {/* Manual add */}
+          <Card className="p-4 bg-[#12101f]/60 border-white/5">
+            <div className="flex items-center gap-2 mb-3"><Plus className="w-4 h-4 text-violet-400" /><h3 className="font-bold text-sm">Add a review manually</h3></div>
+            <div className="grid sm:grid-cols-2 gap-2">
+              <Input value={newReview.author} onChange={e => setNewReview({ ...newReview, author: e.target.value })} placeholder="Buyer name (e.g. j***n)" className="bg-black/30 border-white/10" />
+              <Select value={newReview.rating} onValueChange={v => setNewReview({ ...newReview, rating: v })}>
+                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="positive">Positive</SelectItem><SelectItem value="neutral">Neutral</SelectItem><SelectItem value="negative">Negative</SelectItem></SelectContent>
+              </Select>
+              <Input value={newReview.item} onChange={e => setNewReview({ ...newReview, item: e.target.value })} placeholder="Item (optional)" className="bg-black/30 border-white/10 sm:col-span-2" />
+              <Textarea value={newReview.comment} onChange={e => setNewReview({ ...newReview, comment: e.target.value })} placeholder="Review comment" className="bg-black/30 border-white/10 sm:col-span-2" />
+            </div>
+            <div className="flex justify-end mt-3"><Button onClick={addReview} className="bg-gradient-to-r from-violet-500 to-fuchsia-600 font-semibold">Add review</Button></div>
+          </Card>
+
+          {/* Existing reviews */}
+          <div>
+            <p className="text-xs text-slate-400 mb-2">{reviews.length} review(s)</p>
+            <div className="space-y-2">
+              {reviews.map(r => (
+                <Card key={r.id} className="p-3 bg-[#12101f]/60 border-white/5 flex items-start gap-3">
+                  <span className={`mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold shrink-0 ${r.rating === 'negative' ? 'bg-red-500/15 text-red-300' : r.rating === 'neutral' ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>{r.rating}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-slate-200">{r.comment}</p>
+                    <p className="text-xs text-slate-500 mt-1">{r.author || 'Buyer'}{r.item ? ` · ${r.item}` : ''}{r.period ? ` · ${r.period}` : ''} · <span className="uppercase">{r.source}</span></p>
+                  </div>
+                  <Button size="icon" variant="ghost" className="text-slate-500 hover:text-red-400 shrink-0" onClick={() => deleteReview(r.id)}><Trash2 className="w-4 h-4" /></Button>
+                </Card>
+              ))}
+              {reviews.length === 0 && <p className="text-sm text-slate-500 py-6 text-center">No reviews yet. Import from eBay or add one manually.</p>}
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="profiles" className="mt-6">

@@ -287,6 +287,37 @@ async function robloxCheckoutEligibility(userId) {
   try { out.limiteds = await robloxLimiteds(userId) } catch (e) { out.limiteds = [] }
   return out
 }
+
+// ---------------- Reviews / eBay feedback import ----------------
+function decodeEntities(s) {
+  if (!s) return s
+  return String(s)
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ').replace(/&#(\d+);/g, (m, n) => String.fromCharCode(Number(n)))
+    .trim()
+}
+async function fetchEbayFeedback(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36', Accept: 'text/html' }, cache: 'no-store' })
+  if (!res.ok) throw new Error(`eBay returned HTTP ${res.status}`)
+  const html = await res.text()
+  const handleM = url.match(/feedback_profile\/([^/?#]+)/)
+  const handle = handleM ? decodeURIComponent(handleM[1]) : null
+  const scoreM = html.match(/Feedback score is ([\d,]+)/i)
+  const feedbackScore = scoreM ? Number(scoreM[1].replace(/,/g, '')) : null
+  const blocks = html.split('data-feedback-id=').slice(1)
+  const items = []
+  for (const b of blocks) {
+    const fid = (b.match(/^(\d+)/) || [])[1]
+    const rating = (b.match(/data-test-type=(\w+)/) || [])[1] || 'positive'
+    const comment = decodeEntities((b.match(/card__comment><span[^>]*>([\s\S]*?)<\/span>/) || [])[1] || '')
+    const author = decodeEntities((b.match(/card__from><span[^>]*>([^<]*)<\/span>/) || [])[1] || '')
+    const item = decodeEntities((b.match(/card__item><span>([^<]*)<\/span>/) || [])[1] || '')
+    const period = decodeEntities((b.match(/aria-label="(Past[^"]*|More than[^"]*|Longer[^"]*)"/) || [])[1] || '')
+    if (fid && comment) items.push({ ebayFeedbackId: fid, rating, comment, author, item, period })
+  }
+  return { handle, feedbackScore, items }
+}
 const REGULAR_TYPES = [[8, 'Hats'], [41, 'Hair'], [42, 'Face Accessories'], [43, 'Neck'], [44, 'Shoulder'], [45, 'Front'], [46, 'Back'], [47, 'Waist'], [18, 'Faces'], [19, 'Gear'], [11, 'Shirts'], [12, 'Pants']]
 async function robloxRegularItems(userId) {
   const results = await Promise.allSettled(REGULAR_TYPES.map(([tid]) => robloxGetJson(`https://inventory.roblox.com/v2/users/${userId}/inventory/${tid}?limit=25&sortOrder=Desc`)))
@@ -441,6 +472,13 @@ async function handleRoute(request, { params }) {
     if (route === '/' || route === '/root') return json({ message: 'Robloot Marketplace API' })
     if (route === '/seed' && method === 'POST') return json(await doSeed(db, true))
     if (route === '/config' && method === 'GET') return json({ cryptoConfigured: blockbeeConfigured(), provider: 'blockbee', receiveCurrency: process.env.BLOCKBEE_RECEIVE_CURRENCY || 'USDT' })
+
+    // ---------- REVIEWS (public) ----------
+    if (route === '/reviews' && method === 'GET') {
+      const settings = await db.collection('settings').findOne({ id: 'reviews' })
+      const reviews = await db.collection('reviews').find({}).sort({ pinned: -1, createdAt: -1 }).toArray()
+      return json({ totalSales: settings?.totalSales ?? 0, reviews: reviews.map(clean) })
+    }
 
     // ---------- ROBLOX PROFILES (public) ----------
     if (route === '/profile/lookup' && method === 'GET') {
@@ -708,6 +746,49 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/admin/')) {
       const user = await getUser(request, db)
       if (!user || !user.isAdmin) return json({ error: 'Admin only' }, 403)
+
+      // ----- Reviews management -----
+      if (route === '/admin/reviews/settings' && method === 'POST') {
+        const b = await request.json()
+        const totalSales = Math.max(0, Math.floor(Number(b.totalSales) || 0))
+        await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', totalSales, updatedAt: new Date() } }, { upsert: true })
+        return json({ success: true, totalSales })
+      }
+      if (route === '/admin/reviews' && method === 'POST') {
+        const b = await request.json()
+        if (!b.comment || !b.comment.toString().trim()) return json({ error: 'Comment is required' }, 400)
+        const review = {
+          id: uuidv4(), author: (b.author || 'eBay buyer').toString().trim(),
+          comment: b.comment.toString().trim(), rating: (b.rating || 'positive').toString(),
+          item: (b.item || '').toString().trim(), period: (b.period || '').toString().trim(),
+          source: (b.source || 'manual').toString(), ebayFeedbackId: b.ebayFeedbackId || null,
+          pinned: !!b.pinned, createdAt: new Date()
+        }
+        await db.collection('reviews').insertOne(review)
+        return json({ review: clean(review) })
+      }
+      if (route.startsWith('/admin/reviews/') && method === 'DELETE') {
+        await db.collection('reviews').deleteOne({ id: path[2] })
+        return json({ success: true })
+      }
+      if (route === '/admin/reviews/import-ebay' && method === 'POST') {
+        const b = await request.json()
+        if (!b.url || !/ebay\.com\/fdbk\/feedback_profile\//i.test(b.url)) return json({ error: 'Enter a valid eBay feedback profile URL (ebay.com/fdbk/feedback_profile/USERNAME)' }, 400)
+        let parsed
+        try { parsed = await fetchEbayFeedback(b.url) } catch (e) { return json({ error: e.message || 'Could not read eBay feedback' }, 502) }
+        let imported = 0, skipped = 0
+        for (const it of parsed.items) {
+          const exists = await db.collection('reviews').findOne({ ebayFeedbackId: it.ebayFeedbackId })
+          if (exists) { skipped++; continue }
+          await db.collection('reviews').insertOne({ id: uuidv4(), author: it.author || 'eBay buyer', comment: it.comment, rating: it.rating, item: it.item, period: it.period, source: 'ebay', ebayFeedbackId: it.ebayFeedbackId, pinned: false, createdAt: new Date() })
+          imported++
+        }
+        // Optionally set total sales to the detected eBay feedback score if admin hasn't set one yet
+        if (parsed.feedbackScore != null && b.setTotalSales) {
+          await db.collection('settings').updateOne({ id: 'reviews' }, { $set: { id: 'reviews', totalSales: parsed.feedbackScore, updatedAt: new Date() } }, { upsert: true })
+        }
+        return json({ imported, skipped, detected: parsed.items.length, feedbackScore: parsed.feedbackScore, handle: parsed.handle })
+      }
 
       if (route === '/admin/roblox-lookup' && method === 'POST') {
         const b = await request.json()
