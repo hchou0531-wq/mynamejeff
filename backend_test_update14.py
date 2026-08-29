@@ -11,7 +11,7 @@ import time
 from typing import Dict, Any, Optional
 
 # Configuration
-BASE_URL = "https://git-preview-roblox.preview.emergentagent.com/api"
+BASE_URL = "https://cookies-8.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@robloot.com"
 ADMIN_PASSWORD = "roblootdevtomo"
 

@@ -9,7 +9,7 @@ import time
 import random
 
 # Base URL from environment
-BASE_URL = "https://git-preview-roblox.preview.emergentagent.com/api"
+BASE_URL = "https://cookies-8.preview.emergentagent.com/api"
 
 def test_update10_buyer_info_and_transactions():
     """
