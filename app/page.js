@@ -654,14 +654,10 @@ function ItemView({ api, go, listingId, user, requireAuth, cfg }) {
                   {elig.premiumChecked
                     ? <StatusRow ok={elig.premium} title={elig.premium ? 'Roblox Premium active' : 'No Roblox Premium detected'} desc={elig.premium ? "You have the Premium (Roblox+) mark." : 'Trading limiteds requires Roblox Premium. You can still continue, but delivery may not be possible without it.'} />
                     : <StatusRow ok={false} title="Couldn't verify Premium" desc="We couldn't confirm Premium right now. Make sure you have Roblox Premium so the item can be traded to you." />}
-                  {/* Trades */}
-                  {elig.tradesChecked
-                    ? <StatusRow ok={elig.tradesEnabled} title={elig.tradesEnabled ? 'Trades are enabled' : 'Trades appear to be disabled'} desc={elig.tradesEnabled ? 'Your account can receive trades.' : 'We could not send you a trade.'}>
-                        {!elig.tradesEnabled && <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Enable trades: Settings → Privacy → “Who can trade with me” → Everyone <ExternalLink className="w-3 h-3" /></a>}
-                      </StatusRow>
-                    : <StatusRow ok={false} title="Make sure trades are enabled" desc="We couldn't verify your trade setting. Please enable trading so we can deliver the item.">
-                        <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>
-                      </StatusRow>}
+                  {/* Trades — Roblox doesn't expose trade privacy to third parties, so we always remind */}
+                  <StatusRow ok={false} title="Make sure trades are enabled" desc="Trades must be turned on so we can deliver your item.">
+                    <a href="https://www.roblox.com/my/account#!/privacy" target="_blank" rel="noreferrer" className="text-xs text-amber-300 hover:underline mt-1 inline-flex items-center gap-1">Roblox → Settings → Privacy → “Who can trade with me” → set to Everyone <ExternalLink className="w-3 h-3" /></a>
+                  </StatusRow>
                   {/* Inventory */}
                   {elig.inventoryChecked
                     ? <StatusRow ok={elig.inventoryPublic} title={elig.inventoryPublic ? 'Inventory is public' : 'Inventory is private'} desc={elig.inventoryPublic ? 'We can verify your items.' : 'Set your inventory to public so we can verify and deliver items.'}>

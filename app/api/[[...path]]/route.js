@@ -254,41 +254,35 @@ async function robloxLimiteds(userId) {
   return data.map(d => ({ assetId: d.assetId, name: d.name, rap: d.recentAveragePrice, originalPrice: d.originalPrice, serialNumber: d.serialNumber, stock: d.assetStock, imageUrl: thumbs[d.assetId] || null }))
 }
 
-// ---------------- Roblox AUTHENTICATED checks (checkout eligibility) ----------------
-// Uses a server-side .ROBLOSECURITY cookie to read Premium + trade-privacy, which Roblox
-// does NOT expose to anonymous requests. The cookie stays server-side (never sent to the browser).
+// ---------------- Roblox premium (Open Cloud API key) + checkout eligibility ----------------
+// Premium is read via a Roblox Open Cloud API key (server-side only, never sent to the browser).
+// Trades privacy is NOT exposed by Roblox to third parties at all, so the checkout always shows
+// an "enable trades" guidance reminder instead of a verified result.
 const RAP_LIMIT = 1500
-function robloxCookie() { const c = process.env.ROBLOX_COOKIE; return c && c.trim() ? c.trim() : null }
-async function robloxAuthGetJson(url) {
-  const ck = robloxCookie()
-  const headers = { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }
-  if (ck) headers['Cookie'] = `.ROBLOSECURITY=${ck}`
-  const res = await fetch(url, { headers, cache: 'no-store' })
-  if (!res.ok) throw new Error(`Roblox ${res.status}`)
-  return await res.json()
+function openCloudKey() { const k = process.env.ROBLOX_OPENCLOUD_KEY; return k && k.trim() ? k.trim() : null }
+async function robloxPremium(userId) {
+  const key = openCloudKey()
+  if (!key) return { premium: null, checked: false }
+  try {
+    const res = await fetch(`https://apis.roblox.com/cloud/v2/users/${userId}`, { headers: { 'x-api-key': key, Accept: 'application/json' }, cache: 'no-store' })
+    if (!res.ok) return { premium: null, checked: false }
+    const d = await res.json()
+    return { premium: !!d.premium, checked: true }
+  } catch (e) { return { premium: null, checked: false } }
 }
 async function robloxCheckoutEligibility(userId) {
-  const hasCookie = !!robloxCookie()
   const out = {
     userId: Number(userId),
     premium: null, premiumChecked: false,
     inventoryPublic: null, inventoryChecked: false,
-    tradesEnabled: null, tradeStatus: null, tradesChecked: false,
+    tradesEnabled: null, tradeStatus: null, tradesChecked: false, // trades privacy is not verifiable by third parties -> UI always shows guidance
     limiteds: [], rapLimit: RAP_LIMIT
   }
   // Inventory visibility (public endpoint, no auth needed)
   try { const iv = await robloxGetJson(`https://inventory.roblox.com/v1/users/${userId}/can-view-inventory`); out.inventoryPublic = !!iv.canView; out.inventoryChecked = true } catch (e) {}
-  // Premium + trades require the authenticated cookie
-  if (hasCookie) {
-    try { const p = await robloxAuthGetJson(`https://premiumfeatures.roblox.com/v1/users/${userId}/validate-membership`); out.premium = (p === true || p === 'true'); out.premiumChecked = true } catch (e) {}
-    try {
-      const t = await robloxAuthGetJson(`https://trades.roblox.com/v1/users/${userId}/can-trade-with`)
-      out.tradeStatus = t.status || null
-      if (t.canTrade === true || t.status === 'CanTrade') { out.tradesEnabled = true; out.tradesChecked = true }
-      else if (t.status && !['SenderCannotTrade', 'Unknown', 'InsufficientPermissions'].includes(t.status)) { out.tradesEnabled = false; out.tradesChecked = true }
-      // 'SenderCannotTrade' etc = our own account limitation, not the buyer's -> leave unchecked so UI shows the "enable trades" guidance.
-    } catch (e) {}
-  }
+  // Premium via Roblox Open Cloud
+  const p = await robloxPremium(userId)
+  out.premium = p.premium; out.premiumChecked = p.checked
   // Owned limiteds so the buyer can pick which item(s) to give (each flagged if RAP >= limit)
   try { out.limiteds = await robloxLimiteds(userId) } catch (e) { out.limiteds = [] }
   return out
