@@ -11,11 +11,11 @@ export const metadata = {
     template: '%s · Ethereal',
   },
   description: 'Discover, buy and sell Roblox limiteds, UGC, accessories and collectibles. Original marketplace demo.',
-  icons: {
-    icon: '/favicon.png',
-    shortcut: '/favicon.png',
-    apple: '/favicon.png',
-  },
+  // No `icons` key on purpose. Next generates the icon links from app/favicon.ico and
+  // app/icon.png, and an explicit `icons` here would override that file convention — which
+  // is how this was previously pointing at /favicon.png in public/ while /favicon.ico still
+  // 404'd. Browsers request /favicon.ico directly regardless of any <link>, and a cached
+  // 404 there is why the icon didn't appear.
 }
 
 export default function RootLayout({ children }) {
