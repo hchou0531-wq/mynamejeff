@@ -123,14 +123,13 @@ function ItemCard({ listing, onOpen }) {
 // fixed cost in it and pushed Sign Up off the edge. Icon-only there is enough to close the
 // gap without touching the buttons. Only the main header opts in — the footer and the
 // mobile drawer's own header each have the full row to themselves, so the wordmark stays.
+// Icon dropped here — it's reserved for the boot screen now, so this is wordmark-only.
+// `compactOnMobile` (the main header, where space is tightest) sizes it down on very small
+// screens rather than hiding it outright, since with no icon there's nothing to fall back to.
 function Logo({ onClick, compactOnMobile }) {
   return (
-    <button onClick={onClick} className="flex items-center gap-2.5 group">
-      <svg width="32" height="32" viewBox="0 0 64 64" className="shrink-0 group-hover:rotate-6 transition-transform">
-        <polygon points="32,4 58,20 58,44 32,60 6,44 6,20" fill="none" stroke="#a855f7" strokeWidth="2.5" />
-        <polygon points="32,16 46,24 46,40 32,48 18,40 18,24" fill="none" stroke="#c084fc" strokeWidth="2" />
-      </svg>
-      <span className={`text-xl font-bold tracking-[0.15em] font-cinzel bg-gradient-to-r from-[#a855f7] to-[#c084fc] bg-clip-text text-transparent ${compactOnMobile ? 'hidden sm:inline' : ''}`}>ETHEREAL</span>
+    <button onClick={onClick} className="flex items-center">
+      <img src="/wordmark.png" alt="Ethereal" className={compactOnMobile ? 'h-6 sm:h-9 w-auto' : 'h-9 w-auto'} />
     </button>
   )
 }
@@ -196,11 +195,13 @@ function BootScreen({ progress, leaving, onSkip }) {
       </div>
       <div className="relative text-center px-6">
         <div className="hidden md:block absolute -inset-16 border-2 pointer-events-none" style={{ borderColor: 'var(--eth-gold-dim)' }} />
-        <svg width="60" height="60" viewBox="0 0 64 64" className="mx-auto mb-4">
-          <polygon points="32,4 58,20 58,44 32,60 6,44 6,20" fill="none" stroke="var(--eth-gold)" strokeWidth="2" />
-          <polygon points="32,16 46,24 46,40 32,48 18,40 18,24" fill="none" stroke="var(--eth-teal)" strokeWidth="1.5" />
-        </svg>
-        <h1 className="font-cinzel font-bold text-5xl md:text-6xl tracking-[0.2em]" style={{ color: 'var(--eth-ink)', textShadow: '0 0 18px rgba(192,132,252,0.6), 0 0 40px rgba(244,114,182,0.4)' }}>ETHEREAL</h1>
+        <img src="/logo.png" alt="" className="h-20 md:h-24 w-auto mx-auto mb-4" />
+        <img
+          src="/wordmark.png"
+          alt="Ethereal"
+          className="h-14 md:h-20 w-auto mx-auto"
+          style={{ filter: 'drop-shadow(0 0 18px rgba(192,132,252,0.6)) drop-shadow(0 0 40px rgba(244,114,182,0.4))' }}
+        />
         <p className="font-vt text-2xl tracking-[0.3em] mt-3" style={{ color: 'var(--eth-gold)' }}>A REALM OF RARE FINDS</p>
         <div className="mt-12 w-full max-w-[320px] md:max-w-[420px] mx-auto">
           <div className="flex justify-between font-pixel text-[9px] tracking-widest mb-2" style={{ color: 'var(--eth-muted)' }}>
@@ -720,6 +721,8 @@ function Captcha({ api, onChange }) {
   )
 }
 
+const RESEND_COOLDOWN_SECONDS = 60
+
 function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
   const [form, setForm] = useState({ username: '', email: '', password: '' })
   const [loading, setLoading] = useState(false)
@@ -727,8 +730,24 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
   const [totpCode, setTotpCode] = useState('')
   const [captcha, setCaptcha] = useState({ captchaId: null, captchaAnswer: '' })
   const [captchaNonce, setCaptchaNonce] = useState(0)
+  // Signup no longer logs the user in directly — the account is pending until the code
+  // is verified — so a successful signup moves here instead of closing the dialog.
+  const [needsVerification, setNeedsVerification] = useState(false)
+  const [verifyEmail, setVerifyEmail] = useState('')
+  const [verifyCode, setVerifyCode] = useState('')
+  const [resendCooldown, setResendCooldown] = useState(0)
 
-  const reset = () => { setNeedsTotp(false); setTotpCode(''); setForm({ username: '', email: '', password: '' }) }
+  const reset = () => {
+    setNeedsTotp(false); setTotpCode('')
+    setNeedsVerification(false); setVerifyEmail(''); setVerifyCode(''); setResendCooldown(0)
+    setForm({ username: '', email: '', password: '' })
+  }
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const t = setInterval(() => setResendCooldown(s => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(t)
+  }, [resendCooldown > 0]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     if (!needsTotp && !captcha.captchaAnswer) { toast.error('Solve the CAPTCHA to continue'); return }
@@ -740,11 +759,93 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
         : { email: form.email, password: form.password, totpCode: needsTotp ? totpCode.trim() : undefined, ...(needsTotp ? {} : captcha) }
       const d = await api(path, { method: 'POST', body: JSON.stringify(body) })
       if (d.requiresTotp) { setNeedsTotp(true); setLoading(false); return }
+      if (mode === 'signup') {
+        // Signup always answers with the same generic "check your email" message, whether
+        // or not the account already existed — that's intentional (avoids leaking which
+        // emails are registered), so this step just always moves on to code entry.
+        setVerifyEmail(form.email.trim().toLowerCase())
+        setNeedsVerification(true)
+        setResendCooldown(RESEND_COOLDOWN_SECONDS)
+        setLoading(false)
+        return
+      }
+      // An unverified account signing in means verification was abandoned earlier — the tab
+      // was closed, the email was lost. Route them straight back into the code step instead
+      // of completing the sign-in: a half-verified session was a dead end, since purchases
+      // 403 and the verify UI only ever existed inside the signup flow. The token from this
+      // response is deliberately dropped; verify-email issues a fresh one on success.
+      if (d.user && d.user.emailVerified === false) {
+        setVerifyEmail(String(d.user.email || form.email).trim().toLowerCase())
+        setNeedsVerification(true)
+        setResendCooldown(0) // the code from their original signup may still be live
+        setLoading(false)
+        toast.info('Please verify your email to finish signing in.')
+        return
+      }
       localStorage.setItem('rbx_token', d.token); onAuthed(d.user); reset()
     } catch (e) {
       toast.error(e.message)
       if (!needsTotp) setCaptchaNonce(n => n + 1) // fresh challenge — the old one is single-use
     } finally { setLoading(false) }
+  }
+
+  const submitVerify = async () => {
+    if (verifyCode.length !== 6) return
+    setLoading(true)
+    try {
+      const d = await api('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email: verifyEmail, code: verifyCode }) })
+      localStorage.setItem('rbx_token', d.token); onAuthed(d.user); reset()
+      toast.success('Email verified — welcome to Ethereal!')
+    } catch (e) {
+      toast.error(e.message)
+      setVerifyCode('')
+    } finally { setLoading(false) }
+  }
+
+  const resendCode = async () => {
+    if (resendCooldown > 0) return
+    setResendCooldown(RESEND_COOLDOWN_SECONDS)
+    try {
+      await api('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: verifyEmail }) })
+      toast.success('New code sent — check your email.')
+    } catch (e) {
+      toast.error(e.message)
+    }
+  }
+
+  if (needsVerification) {
+    return (
+      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset() }}>
+        <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
+          <DialogHeader><DialogTitle className="text-2xl font-black flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-emerald-400" /> Verify your email</DialogTitle>
+            <DialogDescription className="text-slate-400">We sent a 6-digit code to <span className="text-slate-200">{verifyEmail}</span>. Enter it below — it expires in 10 minutes.</DialogDescription></DialogHeader>
+          <div>
+            <Label className="text-slate-300">Verification code</Label>
+            <Input
+              className="bg-black/30 border-white/10 mt-1 font-mono tracking-widest text-lg text-center"
+              value={verifyCode}
+              onChange={e => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="000000"
+              onKeyDown={e => e.key === 'Enter' && submitVerify()}
+              autoFocus
+            />
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-col">
+            <Button disabled={loading || verifyCode.length < 6} onClick={submitVerify} className="w-full bg-gradient-to-r from-[#c084fc] to-[#f472b6] font-semibold">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify & Continue'}
+            </Button>
+            <button
+              className="text-sm text-slate-400 hover:text-[#c084fc] disabled:opacity-50 disabled:hover:text-slate-400"
+              disabled={resendCooldown > 0}
+              onClick={resendCode}
+            >
+              {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : 'Resend code'}
+            </button>
+            <button className="text-xs text-slate-500 hover:text-slate-300" onClick={reset}>Back to sign up</button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
   }
 
   if (needsTotp) {
@@ -2647,7 +2748,7 @@ function ImportListingDialog({ open, setOpen, api, vendors, onCreated }) {
                 <div><Label className="text-slate-300">Stock (qty)</Label><Input type="number" min="1" value={form.stock} onChange={e => set('stock', e.target.value)} className={inp} /></div>
                 <div><Label className="text-emerald-300">Your Price (USD) *</Label><Input type="number" value={form.price} onChange={e => set('price', e.target.value)} placeholder="Set manually" className="bg-black/30 border-emerald-500/30 mt-1" /></div>
               </div>
-              <div><Label className="text-slate-300">Store (optional)</Label><Select value={form.vendorId} onValueChange={v => set('vendorId', v)}><SelectTrigger className={inp}><SelectValue placeholder="Robloot Market (default)" /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label className="text-slate-300">Store (optional)</Label><Select value={form.vendorId} onValueChange={v => set('vendorId', v)}><SelectTrigger className={inp}><SelectValue placeholder="Ethereal Market (default)" /></SelectTrigger><SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent></Select></div>
             </div>
           )}
         </div>

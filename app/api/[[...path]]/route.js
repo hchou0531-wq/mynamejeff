@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 import QRCode from 'qrcode'
 import dns from 'dns'
+import { sendEmail, verificationEmailTemplate } from '@/lib/email'
 
 // Some networks only advertise an IPv6 link-local DNS server, which Node's resolver
 // can't query (ECONNREFUSED on SRV lookups for the mongodb+srv:// connection string).
@@ -18,6 +19,24 @@ if (!process.env.VERCEL) dns.setServers(['8.8.8.8', '1.1.1.1'])
 class DbUnavailableError extends Error {
   constructor(cause) { super('Database unavailable'); this.name = 'DbUnavailableError'; this.cause = cause }
 }
+
+// ---------------- Email verification config (all overridable via env) ----------------
+const VERIFICATION_CODE_TTL_MS = (parseInt(process.env.VERIFICATION_CODE_EXPIRATION_MINUTES, 10) || 10) * 60 * 1000
+const VERIFICATION_RESEND_COOLDOWN_MS = (parseInt(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS, 10) || 60) * 1000
+const MAX_VERIFICATION_ATTEMPTS = parseInt(process.env.MAX_VERIFICATION_ATTEMPTS, 10) || 5
+const MAX_VERIFICATION_EMAILS_PER_HOUR = parseInt(process.env.MAX_VERIFICATION_EMAILS_PER_HOUR, 10) || 3
+const MAX_SIGNUPS_PER_IP_PER_HOUR = parseInt(process.env.MAX_SIGNUPS_PER_IP_PER_HOUR, 10) || 5
+const MAX_SIGNUPS_PER_IP_PER_DAY = parseInt(process.env.MAX_SIGNUPS_PER_IP_PER_DAY, 10) || 20
+const UNVERIFIED_ACCOUNT_TTL_HOURS = parseInt(process.env.UNVERIFIED_ACCOUNT_TTL_HOURS, 10) || 24
+const CAPTCHA_ENABLED = String(process.env.ENABLE_CAPTCHA ?? 'true').toLowerCase() !== 'false'
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// TEST-ONLY escape hatch, set exclusively by scripts/test-server.mjs's spawned process, so
+// the automated suite (scripts/backtest.mjs) can drive flows a real client can't: reading
+// back a just-issued verification code instead of the app ever storing/returning it in
+// plaintext, and reading a CAPTCHA's answer instead of solving the hand-drawn glyphs. Must
+// NEVER be "true" in any real deployment — every gate below falls through to a normal 404
+// or is simply not evaluated when it's unset, exactly as if this code didn't exist.
+const TEST_MODE = process.env.TEST_MODE === 'true'
 function isConnectivityError(err) {
   const n = err && err.name
   return n === 'MongoServerSelectionError' || n === 'MongoNetworkError' || n === 'MongoTopologyClosedError' || n === 'MongoNotConnectedError'
@@ -52,6 +71,25 @@ async function connectToMongo() {
           // (which happens on every authenticated request) an index hit rather than a scan.
           db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
           db.collection('sessions').createIndex({ token: 1 }, { unique: true }),
+          // Closes the signup TOCTOU race: two concurrent requests for the same email/username
+          // can both pass the pre-insert findOne check, but only one insert can win here.
+          db.collection('users').createIndex({ email: 1 }, { unique: true }),
+          db.collection('users').createIndex({ username: 1 }, { unique: true }),
+          // Auto-reaps abandoned unverified accounts. Scoped with a partial filter to
+          // emailVerified:false so a verified account (which has this field unset on
+          // verification) can never be swept up even if the date field lingered somehow.
+          db.collection('users').createIndex(
+            { unverifiedExpiresAt: 1 },
+            { expireAfterSeconds: 0, partialFilterExpression: { emailVerified: false } }
+          ),
+          // One active verification per user — regenerating a code upserts this same doc,
+          // which is what "invalidate the previous code" means in practice.
+          db.collection('emailVerifications').createIndex({ userId: 1 }, { unique: true }),
+          db.collection('emailVerifications').createIndex({ email: 1 }),
+          db.collection('securityEvents').createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
+          // Only ever populated when TEST_MODE=true (test harness only) — short TTL
+          // so a captured code can't outlive the test run even in that mode.
+          db.collection('devEmailCaptures').createIndex({ createdAt: 1 }, { expireAfterSeconds: 15 * 60 }),
         ]).catch(() => {})
         return c
       })
@@ -233,6 +271,21 @@ function requestOrigin(request) {
   const proto = request.headers.get('x-forwarded-proto') || (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) ? 'http' : 'https')
   return `${proto}://${host}`
 }
+// The origin to bake into an EMAIL. Deliberately NOT requestOrigin() by default.
+//
+// SECURITY (host header injection): requestOrigin() trusts the Host / X-Forwarded-Host
+// header, which the client controls unless a proxy rewrites it. Anyone can trigger a
+// verification email to any address they like, so a request carrying `Host: evil.com`
+// would produce a genuine, correctly-signed Ethereal email whose button points at the
+// attacker — textbook phishing, sent by us, to a victim who never visited evil.com.
+// A link that outlives its request has to come from configuration, not from that request,
+// so a configured canonical URL always wins; requestOrigin() is only a last-resort
+// fallback for local dev where neither var is set (and no real mail is going out anyway).
+function emailSiteUrl(request) {
+  const configured = process.env.APP_URL || process.env.NEXT_PUBLIC_BASE_URL
+  if (configured && configured.trim()) return configured.trim().replace(/\/+$/, '')
+  return requestOrigin(request)
+}
 
 function handleCORS(response) {
   const origin = process.env.CORS_ORIGINS || '*'
@@ -287,6 +340,12 @@ async function getUser(request, db) {
 }
 async function notify(db, userId, text, type = 'info') {
   await db.collection('notifications').insertOne({ id: uuidv4(), userId, text, type, read: false, createdAt: new Date() })
+}
+// ---------------- Security event log ----------------
+// Structured audit trail for abuse/auth events. `data` must never carry a password,
+// verification code, session token, or API key — only identifiers and outcomes.
+async function logSecurityEvent(db, event, data = {}) {
+  await db.collection('securityEvents').insertOne({ id: uuidv4(), event, ...data, createdAt: new Date() }).catch(() => {})
 }
 // ---------------- Analytics date helpers ----------------
 // Returns the last N "YYYY-MM" month keys ending at the current month, oldest first.
@@ -356,7 +415,7 @@ async function blockbeeCreateCheckout(order, listing) {
   return blockbeeGet('/checkout/request/', {
     value: Number(listing.price).toFixed(2),
     currency: 'usd',
-    item_description: `Purchase of ${listing.item.name} on Robloot`,
+    item_description: `Purchase of ${listing.item.name} on Ethereal`,
     notify_url: notify,
     redirect_url: redirect,
     post: 1,
@@ -771,6 +830,88 @@ function verifyPasswordFlexible(input, stored) {
   }
   return input === s
 }
+
+// ---------------- Email verification codes ----------------
+function normalizeEmail(email) { return String(email || '').trim().toLowerCase() }
+
+// Uniform 000000-999999 via rejection sampling — crypto.randomBytes(4) % 1e6 alone would
+// be very slightly biased toward the low end of the range; this discards the sliver of
+// output space that doesn't divide evenly into 1,000,000 so every code is equally likely.
+function generateVerificationCode() {
+  const RANGE = 1_000_000
+  const LIMIT = Math.floor(0x100000000 / RANGE) * RANGE
+  let n
+  do { n = crypto.randomBytes(4).readUInt32BE(0) } while (n >= LIMIT)
+  return String(n % RANGE).padStart(6, '0')
+}
+// Same scrypt construction as hashPassword/verifyPasswordFlexible above — deliberately
+// slow (unlike a bare sha256) so a leaked emailVerifications collection can't be brute
+// forced across its 1,000,000-value space in any practical time before codes expire.
+function hashVerificationCode(code) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.scryptSync(code, salt, 64).toString('hex')
+  return `scrypt:${salt}:${hash}`
+}
+function verifyVerificationCode(code, stored) {
+  const s = String(stored || '')
+  if (!s.startsWith('scrypt:')) return false
+  const [, salt, hash] = s.split(':')
+  if (!salt || !hash) return false
+  try {
+    const hashBuf = Buffer.from(hash, 'hex')
+    const testHash = crypto.scryptSync(code, salt, 64)
+    return hashBuf.length === testHash.length && crypto.timingSafeEqual(hashBuf, testHash)
+  } catch { return false }
+}
+// Enforces both the minimum gap between sends and the hourly cap for one email address.
+// The cooldown is checked directly against the verification doc's lastSentAt, since a
+// fixed-window counter can't express "N seconds since the last one" precisely at window
+// boundaries; the hourly cap reuses the generic Mongo rate limiter.
+//
+// ORDER MATTERS: rateLimit() increments its counter on every call, whether or not the send
+// ultimately happens. Checking the hourly cap first meant an impatient user tapping Resend
+// three times during the 60s cooldown burned their whole hourly quota without a single
+// email going out — locked out for an hour over messages that were never sent. The cooldown
+// check reads state without mutating it, so doing it first makes those attempts free.
+async function canSendVerificationEmail(db, email) {
+  const ev = await db.collection('emailVerifications').findOne({ email })
+  if (ev?.lastSentAt) {
+    const elapsedMs = Date.now() - new Date(ev.lastSentAt).getTime()
+    if (elapsedMs < VERIFICATION_RESEND_COOLDOWN_MS) {
+      return { allowed: false, retryAfterSec: Math.ceil((VERIFICATION_RESEND_COOLDOWN_MS - elapsedMs) / 1000) }
+    }
+  }
+  const rl = await rateLimit(db, `verify-email-send:${email}`, { max: MAX_VERIFICATION_EMAILS_PER_HOUR, windowMs: 60 * 60 * 1000 })
+  if (!rl.allowed) return { allowed: false, retryAfterSec: rl.retryAfterSec }
+  return { allowed: true }
+}
+// Generates a fresh code, stores only its hash, and emails it. The upsert on `userId`
+// (unique-indexed) overwrites codeHash/attempts/expiresAt atomically, which is exactly
+// what "invalidate the previous code" means — the old hash is simply gone.
+async function issueVerificationCode(db, userId, email, siteUrl) {
+  const code = generateVerificationCode()
+  const now = new Date()
+  await db.collection('emailVerifications').updateOne(
+    { userId },
+    {
+      $set: {
+        userId, email, codeHash: hashVerificationCode(code),
+        expiresAt: new Date(now.getTime() + VERIFICATION_CODE_TTL_MS),
+        attempts: 0, lastSentAt: now, verifiedAt: null,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true }
+  )
+  const { subject, html, text } = verificationEmailTemplate(code, siteUrl)
+  const result = await sendEmail({ to: email, subject, html, text })
+  if (TEST_MODE) {
+    await db.collection('devEmailCaptures').updateOne(
+      { email }, { $set: { email, code, createdAt: now } }, { upsert: true }
+    )
+  }
+  return result.ok
+}
 // ---------------- Login rate limiting (covers both password and TOTP-code guessing) ----------------
 const LOGIN_MAX_ATTEMPTS = 8
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
@@ -1038,16 +1179,25 @@ async function doSeed(db, force = false) {
       await db.collection('users').insertOne({
         id: uuidv4(), username: 'Admin', email: adminEmail, password: hashPassword(adminPassword),
         avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Admin', reputation: 5,
-        isAdmin: true, demo: true, createdAt: new Date()
+        isAdmin: true, demo: true, emailVerified: true, createdAt: new Date()
       })
     } else {
       console.warn('[seed] Admin account not created: set ADMIN_PASSWORD (8+ characters) to provision it.')
     }
   }
+  // One-time backfill: accounts created before email verification existed have no
+  // `emailVerified` field at all. Treat them as already verified rather than retroactively
+  // locking real, pre-existing customers out of purchasing — the unverified TTL index only
+  // ever targets emailVerified:false, so this also keeps them out of that cleanup sweep.
+  await db.collection('users').updateMany({ emailVerified: { $exists: false } }, { $set: { emailVerified: true } })
+  // One-time rebrand: an environment seeded before the Robloot → Ethereal rename still has
+  // a vendor literally named "Robloot Market" sitting in its `vendors` collection — renaming
+  // the seed constant below only affects a FRESH install, not one that already ran it once.
+  await db.collection('vendors').updateOne({ name: 'Robloot Market' }, { $set: { name: 'Ethereal Market' } })
   // ensure at least one house store exists (needed to attribute listings)
   const vendorCount = await db.collection('vendors').countDocuments()
   if (vendorCount === 0) {
-    const vendors = [['Robloot Market', 5, 0], ...SEED_VENDORS].map(([name, reputation, sales]) => ({
+    const vendors = [['Ethereal Market', 5, 0], ...SEED_VENDORS].map(([name, reputation, sales]) => ({
       id: uuidv4(), name, avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(name)}`,
       reputation, salesCount: sales, createdAt: new Date()
     }))
@@ -1081,7 +1231,7 @@ async function handleRoute(request, { params }) {
     const globalThrottle = await rateLimit(db, `ip:${ip}`, { max: 180, windowMs: 60_000 })
     if (!globalThrottle.allowed) return tooMany(globalThrottle.retryAfterSec)
 
-    if (route === '/' || route === '/root') return json({ message: 'Robloot Marketplace API' })
+    if (route === '/' || route === '/root') return json({ message: 'Ethereal Marketplace API' })
     // ADMIN ONLY. doSeed(force) runs deleteMany({}) over `items` and `listings` — this sat
     // above the auth gate, so any anonymous request could wipe the entire catalog with a
     // single curl. It is a destructive maintenance action and is gated like one.
@@ -1091,7 +1241,16 @@ async function handleRoute(request, { params }) {
       return json(await doSeed(db, true))
     }
     if (route === '/config' && method === 'GET') return json({ cryptoConfigured: blockbeeConfigured(), provider: 'blockbee', receiveCurrency: process.env.BLOCKBEE_RECEIVE_CURRENCY || 'USDT' })
-    if (route === '/captcha/new' && method === 'GET') return json(await createCaptchaChallenge(db))
+    if (route === '/captcha/new' && method === 'GET') {
+      const challenge = await createCaptchaChallenge(db)
+      // TEST_MODE only (see the flag's own comment above) — a real client never gets this,
+      // it exists purely so the test harness doesn't have to solve the rendered glyphs.
+      if (TEST_MODE) {
+        const rec = await db.collection('captchaChallenges').findOne({ id: challenge.captchaId })
+        return json({ ...challenge, answer: rec?.answer })
+      }
+      return json(challenge)
+    }
 
     // ---------- DIGITAL GOODS STOREFRONT (public) ----------
     // Public, read-only listings of available toy codes / accounts. Never expose the
@@ -1129,6 +1288,7 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/toycodes/') && route.endsWith('/order') && method === 'POST') {
       const user = await getUser(request, db)
       if (!user) return json({ error: 'Unauthorized' }, 401)
+      if (!user.emailVerified) return json({ error: 'Please verify your email before making a purchase.', requiresVerification: true }, 403)
       const orderRl = await rateLimit(db, `order:${user.id}`, { max: 10, windowMs: 60 * 60 * 1000 })
       if (!orderRl.allowed) return tooMany(orderRl.retryAfterSec)
       const tc = await db.collection('toycodes').findOne({ id: path[1] })
@@ -1171,7 +1331,7 @@ async function handleRoute(request, { params }) {
         const notifyUrl = `${base}/api/payments/callback?order_id=${encodeURIComponent(order.orderId)}&nonce=${encodeURIComponent(order.nonce)}`
         const redirectUrl = `${base}/order/${orderCode}`
         const bb = await blockbeeGet('/checkout/request/', {
-          value: Number(tc.price).toFixed(2), currency: 'usd', item_description: `Purchase of ${tc.title} on Robloot`,
+          value: Number(tc.price).toFixed(2), currency: 'usd', item_description: `Purchase of ${tc.title} on Ethereal`,
           notify_url: notifyUrl, redirect_url: redirectUrl, post: 1, json: 1
         })
         await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { blockbeePaymentId: String(bb.payment_id), checkoutUrl: bb.payment_url } })
@@ -1294,29 +1454,164 @@ async function handleRoute(request, { params }) {
       catch (e) { return json({ error: e.message || 'Eligibility check failed' }, 502) }
     }
 
+    // TEST-ONLY. Only exists at all when TEST_MODE=true — otherwise this falls
+    // through to the normal unknown-route 404 further down, indistinguishable from the
+    // route simply not existing. Never set that env var outside the test harness.
+    if (TEST_MODE && route === '/test/verification-code' && method === 'GET') {
+      const email = normalizeEmail(q.get('email'))
+      const doc = await db.collection('devEmailCaptures').findOne({ email })
+      if (!doc) return json({ error: 'No captured code for this email' }, 404)
+      return json({ code: doc.code })
+    }
+
     // ---------- AUTH ----------
     // Every field below is coerced to a string (or rejected) before it ever reaches a Mongo
     // query — passing an object like {"$ne": null} as JSON must never be interpretable as a
     // query operator, or it becomes a full authentication-bypass NoSQL injection.
     if (route === '/auth/signup' && method === 'POST') {
-      const signupRl = await rateLimit(db, `signup:${ip}`, { max: 5, windowMs: 60 * 60 * 1000 })
-      if (!signupRl.allowed) return tooMany(signupRl.retryAfterSec)
-      const b = await request.json()
-      if (!(await verifyCaptcha(db, b.captchaId, b.captchaAnswer))) return json({ error: 'Incorrect CAPTCHA — please try again.', captchaRequired: true }, 400)
+      const signupHourRl = await rateLimit(db, `signup:${ip}`, { max: MAX_SIGNUPS_PER_IP_PER_HOUR, windowMs: 60 * 60 * 1000 })
+      if (!signupHourRl.allowed) {
+        await logSecurityEvent(db, 'signup_rate_limited', { ip, window: 'hour' })
+        return tooMany(signupHourRl.retryAfterSec)
+      }
+      const signupDayRl = await rateLimit(db, `signup:day:${ip}`, { max: MAX_SIGNUPS_PER_IP_PER_DAY, windowMs: 24 * 60 * 60 * 1000 })
+      if (!signupDayRl.allowed) {
+        await logSecurityEvent(db, 'signup_rate_limited', { ip, window: 'day' })
+        return tooMany(signupDayRl.retryAfterSec)
+      }
+      const b = await request.json().catch(() => ({}))
+      if (CAPTCHA_ENABLED && !(await verifyCaptcha(db, b.captchaId, b.captchaAnswer))) {
+        await logSecurityEvent(db, 'captcha_failure', { ip, route: 'signup' })
+        return json({ error: 'Incorrect CAPTCHA — please try again.', captchaRequired: true }, 400)
+      }
       const username = typeof b.username === 'string' ? b.username.trim() : ''
-      const email = typeof b.email === 'string' ? b.email.trim() : ''
+      const email = normalizeEmail(b.email)
       const password = typeof b.password === 'string' ? b.password : ''
-      if (!username || !email || !password) return json({ error: 'Missing fields' }, 400)
-      const exists = await db.collection('users').findOne({ $or: [{ email }, { username }] })
-      if (exists) return json({ error: 'Username or email already taken' }, 400)
+      if (!username || username.length < 3 || username.length > 24) return json({ error: 'Username must be 3-24 characters' }, 400)
+      if (!EMAIL_RE.test(email)) return json({ error: 'Please enter a valid email address' }, 400)
+      if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400)
+      await logSecurityEvent(db, 'signup_attempt', { ip })
+
+      // Email is checked BEFORE username on purpose. Someone who abandoned their own signup
+      // and starts over types the same username AND the same email — checking username first
+      // dead-ended them on "Username is already taken" with no way left to get a fresh code
+      // (the verify step is gone once the dialog closes). Matching on their email first sends
+      // them a new code instead, which is what they were actually trying to do.
+      const GENERIC_OK = { message: 'If this email can be registered, a verification code has been sent.' }
+      const existingEmail = await db.collection('users').findOne({ email })
+      if (existingEmail) {
+        // Only ever re-send to the account that already owns this email, and never touch
+        // its password — otherwise this becomes a way to reset someone else's credentials.
+        if (!existingEmail.emailVerified) {
+          const canSend = await canSendVerificationEmail(db, email)
+          if (canSend.allowed) await issueVerificationCode(db, existingEmail.id, email, emailSiteUrl(request))
+        }
+        return json(GENERIC_OK)
+      }
+
+      // Username collisions aren't sensitive the way email is (this app already shows
+      // usernames publicly on listings/reviews), so this can say so directly — only the
+      // email-existence branch above needs to stay silent to avoid account enumeration.
+      const existingUsername = await db.collection('users').findOne({ username })
+      if (existingUsername) return json({ error: 'Username is already taken' }, 400)
+
       const user = {
         id: uuidv4(), username, email, password: hashPassword(password),
         avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(username)}`,
-        reputation: 5, isAdmin: false, demo: false, createdAt: new Date()
+        reputation: 5, isAdmin: false, demo: false, emailVerified: false,
+        unverifiedExpiresAt: new Date(Date.now() + UNVERIFIED_ACCOUNT_TTL_HOURS * 60 * 60 * 1000),
+        createdAt: new Date()
       }
-      await db.collection('users').insertOne(user)
-      await notify(db, user.id, 'Welcome to Robloot! Browse the marketplace and pay securely with crypto.', 'success')
+      try {
+        await db.collection('users').insertOne(user)
+      } catch (e) {
+        // Unique-index race: a concurrent request for the same email/username won it
+        // between the findOne checks above and this insert. Answer exactly as the
+        // non-race path would have for whichever field actually collided.
+        if (e && e.code === 11000) {
+          const dupe = await db.collection('users').findOne({ $or: [{ email }, { username }] })
+          if (dupe && dupe.username === username && dupe.email !== email) return json({ error: 'Username is already taken' }, 400)
+          return json(GENERIC_OK)
+        }
+        throw e
+      }
+      const canSend = await canSendVerificationEmail(db, email)
+      if (canSend.allowed) {
+        const sent = await issueVerificationCode(db, user.id, email, emailSiteUrl(request))
+        await logSecurityEvent(db, sent ? 'verification_email_sent' : 'verification_email_send_failed', { userId: user.id })
+      }
+      return json(GENERIC_OK)
+    }
+    if (route === '/auth/verify-email' && method === 'POST') {
+      const verifyRl = await rateLimit(db, `verify-email:${ip}`, { max: 20, windowMs: 15 * 60 * 1000 })
+      if (!verifyRl.allowed) return tooMany(verifyRl.retryAfterSec)
+      const b = await request.json().catch(() => ({}))
+      const email = normalizeEmail(b.email)
+      const code = typeof b.code === 'string' ? b.code.trim() : ''
+      // One message for every failure mode below — wrong code, expired code, already-used
+      // code, too many attempts, or no pending verification at all are all indistinguishable
+      // from the outside, so a code can never be brute forced closer by reading the response.
+      const INVALID = { error: 'Invalid or expired verification code.' }
+      if (!email || !/^\d{6}$/.test(code)) return json(INVALID, 400)
+
+      const ev = await db.collection('emailVerifications').findOne({ email })
+      if (!ev) { await logSecurityEvent(db, 'verification_attempt_failed', { reason: 'no_pending', ip }); return json(INVALID, 400) }
+      if (ev.verifiedAt) return json(INVALID, 400) // already consumed — no replay
+      if (new Date(ev.expiresAt) <= new Date()) {
+        await logSecurityEvent(db, 'verification_code_expired', { userId: ev.userId })
+        return json(INVALID, 400)
+      }
+      if ((ev.attempts || 0) >= MAX_VERIFICATION_ATTEMPTS) {
+        await db.collection('emailVerifications').updateOne({ userId: ev.userId }, { $set: { expiresAt: new Date(0) } })
+        await logSecurityEvent(db, 'verification_attempt_failed', { reason: 'max_attempts', userId: ev.userId })
+        return json(INVALID, 400)
+      }
+      if (!verifyVerificationCode(code, ev.codeHash)) {
+        await db.collection('emailVerifications').updateOne({ userId: ev.userId }, { $inc: { attempts: 1 } })
+        await logSecurityEvent(db, 'verification_attempt_failed', { reason: 'wrong_code', userId: ev.userId })
+        return json(INVALID, 400)
+      }
+      // Atomic compare-and-set: filtering on verifiedAt:null means only the FIRST of two
+      // concurrent correct submissions (a double-click, a retried request) can flip it —
+      // the second sees modifiedCount 0 and falls back to the same generic error, so an
+      // account can never be activated or handed a session twice from one code.
+      const claim = await db.collection('emailVerifications').updateOne(
+        { userId: ev.userId, verifiedAt: null },
+        { $set: { verifiedAt: new Date() } }
+      )
+      if (claim.modifiedCount !== 1) return json(INVALID, 400)
+
+      await db.collection('users').updateOne({ id: ev.userId }, { $set: { emailVerified: true }, $unset: { unverifiedExpiresAt: '' } })
+      const user = await db.collection('users').findOne({ id: ev.userId })
+      if (!user) return json(INVALID, 400)
+      await notify(db, user.id, 'Welcome to Ethereal! Browse the marketplace and pay securely with crypto.', 'success')
+      await logSecurityEvent(db, 'verification_succeeded', { userId: user.id })
       return json({ token: await createSession(db, user.id), user: clean(user) })
+    }
+    if (route === '/auth/resend-verification' && method === 'POST') {
+      const ipRl = await rateLimit(db, `resend:${ip}`, { max: 10, windowMs: 60 * 60 * 1000 })
+      if (!ipRl.allowed) { await logSecurityEvent(db, 'resend_rate_limited', { ip }); return tooMany(ipRl.retryAfterSec) }
+      const b = await request.json().catch(() => ({}))
+      const email = normalizeEmail(b.email)
+      // Generic on the "does this account exist / is it already verified" axis, same as
+      // signup — but the cooldown/hourly-cap case below intentionally DOES return a
+      // distinguishable 429 with Retry-After, because that's the account owner's own
+      // resend click needing real feedback ("wait 40s"), not an attacker fishing for valid
+      // addresses; login's existing lockout message makes the same trade-off.
+      const GENERIC = { message: 'If a pending verification exists for this email, a new code has been sent.' }
+      if (!EMAIL_RE.test(email)) return json(GENERIC)
+
+      const user = await db.collection('users').findOne({ email })
+      if (!user || user.emailVerified) return json(GENERIC)
+
+      const canSend = await canSendVerificationEmail(db, email)
+      if (!canSend.allowed) {
+        await logSecurityEvent(db, 'resend_rate_limited', { ip, userId: user.id })
+        return tooMany(canSend.retryAfterSec)
+      }
+      const sent = await issueVerificationCode(db, user.id, email, emailSiteUrl(request))
+      await logSecurityEvent(db, sent ? 'verification_email_sent' : 'verification_email_send_failed', { userId: user.id, via: 'resend' })
+      return json(GENERIC)
     }
     if (route === '/auth/login' && method === 'POST') {
       const loginRl = await rateLimit(db, `login:${ip}`, { max: 30, windowMs: 15 * 60 * 1000 })
@@ -1429,6 +1724,7 @@ async function handleRoute(request, { params }) {
     if (route === '/orders' && method === 'POST') {
       const user = await getUser(request, db)
       if (!user) return json({ error: 'Unauthorized' }, 401)
+      if (!user.emailVerified) return json({ error: 'Please verify your email before making a purchase.', requiresVerification: true }, 403)
       const orderRl = await rateLimit(db, `order:${user.id}`, { max: 10, windowMs: 60 * 60 * 1000 })
       if (!orderRl.allowed) return tooMany(orderRl.retryAfterSec)
       const b = await request.json()
@@ -1703,7 +1999,7 @@ async function handleRoute(request, { params }) {
       if (route === '/admin/dashboard/totp/setup' && method === 'POST') {
         const secret = genTotpSecret()
         await db.collection('users').updateOne({ id: user.id }, { $set: { totpPendingSecret: encryptSecret(secret) } })
-        const otpauthUrl = totpAuthUrl(secret, user.email || user.username, 'Robloot Admin')
+        const otpauthUrl = totpAuthUrl(secret, user.email || user.username, 'Ethereal Admin')
         const qrDataUrl = await QRCode.toDataURL(otpauthUrl, { margin: 1, width: 240 })
         return json({ secret, otpauthUrl, qrDataUrl })
       }
@@ -2333,7 +2629,7 @@ async function handleRoute(request, { params }) {
 
         // Resolve vendor: use provided, else default house store
         let vendor = b.vendorId ? await db.collection('vendors').findOne({ id: b.vendorId }) : null
-        if (!vendor) vendor = await db.collection('vendors').findOne({ name: 'Robloot Market' }) || await db.collection('vendors').findOne({})
+        if (!vendor) vendor = await db.collection('vendors').findOne({ name: 'Ethereal Market' }) || await db.collection('vendors').findOne({})
         if (!vendor) return json({ error: 'No store available' }, 400)
 
         const days = parseInt(b.durationDays) || 30

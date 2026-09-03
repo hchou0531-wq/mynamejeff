@@ -84,6 +84,7 @@ node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
 .env
 .env.*
 *.env
+!.env.example
 credentials.json
 *.key
 .credentials

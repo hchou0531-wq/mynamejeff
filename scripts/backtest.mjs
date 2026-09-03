@@ -17,17 +17,31 @@ const failures = []
 
 const c = { g: s => `\x1b[32m${s}\x1b[0m`, r: s => `\x1b[31m${s}\x1b[0m`, y: s => `\x1b[33m${s}\x1b[0m`, d: s => `\x1b[90m${s}\x1b[0m` }
 
-async function req(path, { method = 'GET', body, token, headers = {} } = {}) {
+async function req(path, { method = 'GET', body, token, ip, headers = {} } = {}) {
   const started = Date.now()
   const res = await fetch(`${BASE}/api${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      // clientIp() in the API trusts the LAST X-Forwarded-For hop (see its own comment on
+      // why: a proxy appends there, so a spoofed value the client prepends is ignored). The
+      // harness abuses that same trust to give independent test flows independent per-IP
+      // rate-limit buckets — every request in this run otherwise shares one real IP and
+      // would exhaust shared quotas (signups/hour, etc.) purely from test-suite volume,
+      // not from anything the flow under test is actually doing wrong.
+      ...(ip ? { 'X-Forwarded-For': ip } : {}),
+      ...headers,
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   let data = {}
   try { data = await res.json() } catch {}
   return { status: res.status, data, ms: Date.now() - started, headers: res.headers }
 }
+// A fresh synthetic IP per logical test flow, so it gets its own rate-limit buckets.
+let ipCounter = 0
+const freshIp = () => `10.77.${Math.floor(ipCounter / 254)}.${(ipCounter++ % 254) + 1}`
 
 async function test(name, fn) {
   try {
@@ -45,17 +59,18 @@ function eq(actual, want, label) {
 }
 const rand = () => Math.random().toString(36).slice(2, 10)
 
-// Solve the self-hosted CAPTCHA by reading the digits back out of the SVG it returns.
-// (Only possible because we're the trusted test harness hitting our own endpoint.)
-async function solveCaptcha() {
-  const { status, data } = await req('/captcha/new')
+// Solve the self-hosted CAPTCHA. The glyphs are hand-drawn <line> strokes rather than an
+// SVG <text> node specifically so the answer can't be scraped out of the markup — so the
+// server hands the answer back directly, but ONLY when TEST_MODE=true (see the guard in
+// app/api/[[...path]]/route.js and its use in scripts/test-server.mjs). Against a real
+// deployment (no TEST_MODE) this legitimately can't solve the challenge, same as any client.
+async function solveCaptcha(ip) {
+  const { status, data } = await req('/captcha/new', { ip })
   if (status !== 200) return null
-  const chars = [...data.svg.matchAll(/>([^<]+)<\/text>/g)].map(m => m[1]).join('').trim()
-  const m = chars.match(/^(\d+)\s*([+-])\s*(\d+)$/)
-  if (!m) throw new Error(`could not parse captcha question from svg: "${chars}"`)
-  const [, a, op, b] = m
-  const answer = op === '+' ? Number(a) + Number(b) : Number(a) - Number(b)
-  return { captchaId: data.captchaId, captchaAnswer: answer }
+  if (typeof data.answer !== 'number') {
+    throw new Error('server did not return a CAPTCHA answer — is TEST_MODE=true set on it? (scripts/test-server.mjs sets this automatically)')
+  }
+  return { captchaId: data.captchaId, captchaAnswer: data.answer }
 }
 
 const run = async () => {
@@ -105,14 +120,15 @@ const run = async () => {
   }))
 
   await test('CAPTCHA issues a solvable challenge', needDb(async () => {
-    const s = await solveCaptcha()
+    const s = await solveCaptcha(freshIp())
     expect(s && s.captchaId, 'no captcha returned')
     expect(Number.isFinite(s.captchaAnswer), 'unsolvable answer')
   }))
 
   await test('signup rejects a wrong CAPTCHA', needDb(async () => {
-    const s = await solveCaptcha()
-    const r = await req('/auth/signup', { method: 'POST', body: {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const r = await req('/auth/signup', { ip, method: 'POST', body: {
       username: 'bt' + rand(), email: `bt${rand()}@test.local`, password: 'TestPass123!',
       captchaId: s.captchaId, captchaAnswer: s.captchaAnswer + 1,
     }})
@@ -121,35 +137,160 @@ const run = async () => {
   }))
 
   await test('CAPTCHA is single-use (replay is rejected)', needDb(async () => {
-    const s = await solveCaptcha()
-    const first = await req('/auth/signup', { method: 'POST', body: {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const first = await req('/auth/signup', { ip, method: 'POST', body: {
       username: 'bt' + rand(), email: `bt${rand()}@test.local`, password: 'TestPass123!', ...s,
     }})
     eq(first.status, 200, 'first use should succeed')
-    const replay = await req('/auth/signup', { method: 'POST', body: {
+    const replay = await req('/auth/signup', { ip, method: 'POST', body: {
       username: 'bt' + rand(), email: `bt${rand()}@test.local`, password: 'TestPass123!', ...s,
     }})
     eq(replay.status, 400, 'replayed captcha should be rejected')
   }))
 
-  // A real account for the authenticated checks below.
+  // A real, VERIFIED account for the authenticated checks below. Signup itself no longer
+  // returns a token — the account is pending until the emailed code is confirmed — so this
+  // walks the full signup → capture → verify chain. The capture read only works because the
+  // test harness runs with TEST_MODE=true (see scripts/test-server.mjs); that flag must
+  // never be set outside this harness — see the guard in app/api/[[...path]]/route.js.
+  // Each flow below gets its OWN synthetic IP (via freshIp()) purely so independent test
+  // flows get independent rate-limit buckets — otherwise every request in this run shares
+  // one real IP and the suite's own volume of signups would exhaust shared per-IP quotas
+  // that have nothing to do with whatever the flow under test is actually checking.
+  const mainIp = freshIp()
   let token = null, userEmail = `bt${rand()}@test.local`
-  await test('signup with a valid CAPTCHA succeeds and returns a token', needDb(async () => {
-    const s = await solveCaptcha()
-    const r = await req('/auth/signup', { method: 'POST', body: {
+  await test('signup succeeds but returns no token — account is pending until verified', needDb(async () => {
+    const s = await solveCaptcha(mainIp)
+    const r = await req('/auth/signup', { ip: mainIp, method: 'POST', body: {
       username: 'bt' + rand(), email: userEmail, password: 'TestPass123!', ...s,
     }})
     eq(r.status, 200, 'status')
+    expect(r.data.token === undefined, 'signup must not hand out a session before the email is verified')
+    expect(/verification code/i.test(r.data.message || ''), `expected a pending-verification message, got "${JSON.stringify(r.data)}"`)
+  }))
+
+  await test('the emailed code verifies the account and returns a session', needDb(async () => {
+    const captured = await req(`/test/verification-code?email=${encodeURIComponent(userEmail)}`)
+    expect(captured.status === 200 && captured.data.code, 'harness could not read back the captured code — TEST_MODE not set on the server?')
+    const r = await req('/auth/verify-email', { ip: mainIp, method: 'POST', body: { email: userEmail, code: captured.data.code } })
+    eq(r.status, 200, 'status')
     expect(r.data.token, 'no token returned')
+    expect(r.data.user && r.data.user.emailVerified === true, 'user not marked emailVerified')
     expect(r.data.user && r.data.user.password === undefined, 'password leaked in response')
     expect(r.data.user && r.data.user.totpSecret === undefined, 'totpSecret leaked in response')
     token = r.data.token
   }))
 
+  await test('a verification code cannot be replayed', needDb(async () => {
+    if (!token) return 'skip'
+    const captured = await req(`/test/verification-code?email=${encodeURIComponent(userEmail)}`)
+    if (captured.status !== 200) return 'skip' // already cleaned up — fine, this just means we can't re-check
+    const r = await req('/auth/verify-email', { ip: mainIp, method: 'POST', body: { email: userEmail, code: captured.data.code } })
+    eq(r.status, 400, 'a second use of the same code should be rejected')
+  }))
+
+  await test('verify-email rejects a wrong code with a generic message', needDb(async () => {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const email = `ev${rand()}@test.local`
+    await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
+    const r = await req('/auth/verify-email', { ip, method: 'POST', body: { email, code: '000000' } })
+    eq(r.status, 400, 'status')
+    expect(/invalid or expired/i.test(r.data.error || ''), `expected the generic invalid/expired message, got "${r.data.error}"`)
+  }))
+
+  await test('verify-email locks out the code after too many wrong attempts', needDb(async () => {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const email = `ev${rand()}@test.local`
+    await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
+    let last
+    for (let i = 0; i < 6; i++) last = await req('/auth/verify-email', { ip, method: 'POST', body: { email, code: '000000' } })
+    eq(last.status, 400, 'still a generic 400 once the attempt limit is exhausted')
+    const captured = await req(`/test/verification-code?email=${encodeURIComponent(email)}`)
+    if (captured.status === 200) {
+      const withRealCode = await req('/auth/verify-email', { ip, method: 'POST', body: { email, code: captured.data.code } })
+      eq(withRealCode.status, 400, 'even the CORRECT code must be rejected once the attempt limit is hit')
+    }
+  }))
+
+  await test('signup gives the identical response whether or not the email is already registered', needDb(async () => {
+    const ip = freshIp()
+    const email = `ev${rand()}@test.local`
+    const s1 = await solveCaptcha(ip)
+    const first = await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s1 } })
+    const s2 = await solveCaptcha(ip)
+    const second = await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s2 } })
+    eq(first.status, 200, 'first signup status')
+    eq(second.status, 200, 'repeat signup status')
+    eq(second.data.message, first.data.message, 'response text differs — leaks whether the email is already registered')
+  }))
+
+  // Regression: the username check used to run BEFORE the email check, so a user who
+  // abandoned their own signup and started over — same username, same email — was told
+  // "Username is already taken" and had no route left to a fresh code.
+  await test('retrying an abandoned signup with the same username and email is not rejected', needDb(async () => {
+    const ip = freshIp()
+    const email = `ev${rand()}@test.local`
+    const username = 'ev' + rand()
+    const s1 = await solveCaptcha(ip)
+    const first = await req('/auth/signup', { ip, method: 'POST', body: { username, email, password: 'TestPass123!', ...s1 } })
+    eq(first.status, 200, 'first signup status')
+    const s2 = await solveCaptcha(ip)
+    const retry = await req('/auth/signup', { ip, method: 'POST', body: { username, email, password: 'TestPass123!', ...s2 } })
+    eq(retry.status, 200, 'retrying your own abandoned signup should not 400')
+    expect(!/username/i.test(retry.data.error || ''), `dead-ended on a username collision: "${retry.data.error}"`)
+    eq(retry.data.message, first.data.message, 'retry should be indistinguishable from the first attempt')
+  }))
+
+  await test('a username taken by a DIFFERENT email is still rejected', needDb(async () => {
+    const ip = freshIp()
+    const username = 'ev' + rand()
+    const s1 = await solveCaptcha(ip)
+    await req('/auth/signup', { ip, method: 'POST', body: { username, email: `ev${rand()}@test.local`, password: 'TestPass123!', ...s1 } })
+    const s2 = await solveCaptcha(ip)
+    const other = await req('/auth/signup', { ip, method: 'POST', body: { username, email: `ev${rand()}@test.local`, password: 'TestPass123!', ...s2 } })
+    eq(other.status, 400, 'status')
+    expect(/username/i.test(other.data.error || ''), `expected a username-taken error, got "${JSON.stringify(other.data)}"`)
+  }))
+
+  await test('resend-verification enforces the cooldown right after signup', needDb(async () => {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const email = `ev${rand()}@test.local`
+    await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
+    const r = await req('/auth/resend-verification', { ip, method: 'POST', body: { email } })
+    eq(r.status, 429, 'expected the 60s cooldown to still be active immediately after signup')
+    expect(r.headers.get('retry-after'), '429 response is missing a Retry-After header')
+  }))
+
+  await test('resend-verification gives the same generic response for an unregistered email', needDb(async () => {
+    const r = await req('/auth/resend-verification', { ip: freshIp(), method: 'POST', body: { email: `nobody${rand()}@test.local` } })
+    eq(r.status, 200, 'status')
+    expect(/pending verification/i.test(r.data.message || ''), `expected the generic message, got "${JSON.stringify(r.data)}"`)
+  }))
+
+  await test('unverified accounts can log in but are blocked from purchasing', needDb(async () => {
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const email = `ev${rand()}@test.local`
+    await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
+    const s2 = await solveCaptcha(ip)
+    const login = await req('/auth/login', { ip, method: 'POST', body: { email, password: 'TestPass123!', ...s2 } })
+    eq(login.status, 200, 'unverified accounts should still be able to log in')
+    eq(login.data.user.emailVerified, false, 'account should not be verified yet')
+    const list = await req('/listings')
+    if (!list.data.listings || !list.data.listings.length) return 'skip'
+    const r = await req('/orders', { ip, method: 'POST', body: { listingId: list.data.listings[0].id }, token: login.data.token })
+    eq(r.status, 403, 'an unverified account should not be able to purchase')
+    expect(r.data.requiresVerification === true, 'missing requiresVerification flag on the 403')
+  }))
+
   await test('login works and never leaks secrets', needDb(async () => {
     if (!token) return 'skip'
-    const s = await solveCaptcha()
-    const r = await req('/auth/login', { method: 'POST', body: { email: userEmail, password: 'TestPass123!', ...s } })
+    const s = await solveCaptcha(mainIp)
+    const r = await req('/auth/login', { ip: mainIp, method: 'POST', body: { email: userEmail, password: 'TestPass123!', ...s } })
     eq(r.status, 200, 'status')
     expect(r.data.user.password === undefined, 'password leaked')
     expect(r.data.user.totpSecret === undefined, 'totpSecret leaked')
@@ -157,8 +298,8 @@ const run = async () => {
 
   await test('login rejects a wrong password', needDb(async () => {
     if (!token) return 'skip'
-    const s = await solveCaptcha()
-    const r = await req('/auth/login', { method: 'POST', body: { email: userEmail, password: 'wrong-password', ...s } })
+    const s = await solveCaptcha(mainIp)
+    const r = await req('/auth/login', { ip: mainIp, method: 'POST', body: { email: userEmail, password: 'wrong-password', ...s } })
     expect([400, 401, 429].includes(r.status), `expected 401, got ${r.status}`)
   }))
 
