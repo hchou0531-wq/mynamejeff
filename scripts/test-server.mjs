@@ -51,6 +51,10 @@ const run = async () => {
       ADMIN_DASHBOARD_SECRET: 'test-dashboard-secret',
       TOTP_ENCRYPTION_KEY: '0'.repeat(64),
       BLOCKBEE_API_KEY: '',
+      // Lets the backtest suite read back a just-issued verification code over HTTP
+      // instead of touching Mongo directly — see the TEST_MODE guard in
+      // app/api/[[...path]]/route.js. Never set this outside the test harness.
+      TEST_MODE: 'true',
       NODE_OPTIONS: '--max-old-space-size=2048',
       // Build somewhere else so this never corrupts the .next cache of a dev server the
       // user already has running from this same directory.

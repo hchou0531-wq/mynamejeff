@@ -3,8 +3,19 @@ import { Providers } from './providers'
 import { Toaster } from '@/components/ui/sonner'
 
 export const metadata = {
-  title: 'Ethereal — A Realm of Rare Finds',
+  // `template` is what every nested page's own title flows into, so a route only has to
+  // name itself ("Order ABC123") and still ends up branded ("Order ABC123 · Ethereal").
+  // `default` covers the home page and anything that doesn't set one.
+  title: {
+    default: 'Ethereal — A Realm of Rare Finds',
+    template: '%s · Ethereal',
+  },
   description: 'Discover, buy and sell Roblox limiteds, UGC, accessories and collectibles. Original marketplace demo.',
+  icons: {
+    icon: '/favicon.png',
+    shortcut: '/favicon.png',
+    apple: '/favicon.png',
+  },
 }
 
 export default function RootLayout({ children }) {
