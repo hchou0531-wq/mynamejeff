@@ -1,0 +1,16 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1280, "h": 1660, "title": "Ethereal Realms — Final", "page": "page-1" },
+    { "file": "DirectionA.dc.html", "x": 0, "y": 0, "w": 1280, "h": 1660, "title": "Arcade Neon", "page": "page-2" },
+    { "file": "DirectionC.dc.html", "x": 1400, "y": 0, "w": 1280, "h": 1660, "title": "Terminal Boot", "page": "page-2" }
+  ],
+  "annotations": [
+    { "id": "brief-summary", "x": 0, "y": -220, "w": 1200, "page": "page-1", "text": "Direction picked: Ethereal Realms — JRPG fantasy, deep indigo/gold, ornate frame, Cinzel wordmark + pixel accents.\n\nAnimated loading screen (loading bar -> \"Press Start\") flows straight into a matching shop HUD with rarity-colored item cards (common/rare/epic/legendary).\n\nThe two unchosen directions (Arcade Neon, Terminal Boot) are kept on the Alternates page for reference." },
+    { "id": "alt-note", "x": 0, "y": -160, "w": 700, "page": "page-2", "text": "Not chosen — kept for reference only." }
+  ],
+  "pages": [
+    { "id": "page-1", "name": "Final" },
+    { "id": "page-2", "name": "Alternates" }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

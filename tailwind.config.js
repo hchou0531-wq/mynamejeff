@@ -17,6 +17,11 @@ module.exports = {
         }
       },
       extend: {
+        fontFamily: {
+          cinzel: ['Cinzel', 'serif'],
+          pixel: ['"Press Start 2P"', 'monospace'],
+          vt: ['VT323', 'monospace'],
+        },
         colors: {
           border: 'hsl(var(--border))',
           input: 'hsl(var(--input))',

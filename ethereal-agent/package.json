@@ -1,0 +1,14 @@
+{
+  "name": "ethereal-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private Telegram operations agent for the Ethereal marketplace.",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node tests/run.mjs"
+  },
+  "dependencies": {
+    "sharp": "*"
+  }
+}

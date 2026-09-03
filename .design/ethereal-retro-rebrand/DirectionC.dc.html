@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Mono:wght@400;600&display=swap">
+  <style>
+    :root{
+      --bg:#060a06; --green:#39ff6a; --green-dim:#1e7a38; --amber:#ffb000;
+      --ink:#d8ffe0; --muted:#4f8a5c;
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);font-family:'IBM Plex Mono',monospace;}
+    a{color:var(--amber);} a:hover{color:var(--green);}
+    .page{width:1280px;position:relative;overflow:hidden;background:var(--bg);}
+    .scan{position:absolute;inset:0;pointer-events:none;z-index:5;
+      background-image:repeating-linear-gradient(to bottom, rgba(57,255,106,0.06) 0px, rgba(57,255,106,0.06) 1px, transparent 2px, transparent 3px);}
+    .glow{position:absolute;inset:0;pointer-events:none;z-index:4;box-shadow:inset 0 0 160px rgba(57,255,106,0.08);}
+
+    /* ---- Boot screen ---- */
+    .boot{height:760px;padding:64px 80px;position:relative;z-index:2;}
+    .ascii{font-family:'VT323',monospace;font-size:15px;line-height:1.15;color:var(--green);white-space:pre;
+      text-shadow:0 0 6px rgba(57,255,106,0.6);margin:0 0 30px;}
+    .line{font-family:'IBM Plex Mono',monospace;font-size:16px;color:var(--muted);margin:4px 0;}
+    .line .ok{color:var(--green);}
+    .line .tag{color:var(--amber);}
+    .cursor{display:inline-block;width:9px;height:16px;background:var(--green);animation:blink 1s steps(1) infinite;vertical-align:-2px;}
+    @keyframes blink{50%{opacity:0}}
+    .loadwrap{margin-top:34px;width:560px;}
+    .loadbar{height:18px;border:1px solid var(--green);position:relative;overflow:hidden;background:rgba(57,255,106,0.05);}
+    .loadfill{position:absolute;inset:0;width:0%;background:repeating-linear-gradient(90deg, var(--green) 0 8px, transparent 8px 12px);
+      animation:fillbar 3.5s steps(20) infinite alternate;}
+    @keyframes fillbar{0%{width:4%}100%{width:90%}}
+    .prompt{margin-top:36px;font-size:17px;color:var(--green);}
+
+    /* ---- Market GUI ---- */
+    .market{padding:0 80px 60px;position:relative;z-index:2;}
+    .hud{display:flex;align-items:center;gap:24px;padding:14px 20px;border:1px solid var(--green-dim);
+      background:rgba(57,255,106,0.03);}
+    .hud-logo{font-family:'VT323',monospace;font-size:22px;color:var(--green);letter-spacing:2px;}
+    .hud-tabs{display:flex;gap:6px;flex-grow:1;}
+    .hud-tab{font-size:12px;letter-spacing:1px;color:var(--muted);padding:9px 16px;border:1px solid var(--green-dim);}
+    .hud-tab.on{color:var(--bg);background:var(--green);}
+    .hud-coin{font-size:18px;color:var(--amber);}
+    .sec-title{font-family:'VT323',monospace;font-size:22px;color:var(--green);letter-spacing:2px;margin:32px 0 18px;}
+    .sec-title::before{content:'> ';color:var(--amber);}
+    .grid{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:20px;}
+    .card{border:1px solid var(--rc,var(--green-dim));padding:16px;background:rgba(57,255,106,0.02);}
+    .card .icon{width:100%;height:120px;display:flex;align-items:center;justify-content:center;
+      border:1px dashed var(--green-dim);margin-bottom:12px;}
+    .card .name{font-size:15px;color:var(--ink);}
+    .card .rarity{font-family:'VT323',monospace;font-size:16px;color:var(--rc,var(--muted));margin:8px 0;letter-spacing:1px;}
+    .card .price{font-size:15px;color:var(--amber);}
+    .card .row{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:6px;}
+  </style>
+</helmet>
+
+<div class="page">
+  <div class="boot">
+    <pre class="ascii"> _____ _____ _   _ _____ ____  _____    _    _
+|  ___|_   _| | | | ____|  _ \| ____|  / \  | |
+| |_    | | | |_| |  _| | |_) |  _|   / _ \ | |
+|  _|   | | |  _  | |___|  _ &lt;| |___ / ___ \| |___
+|_|     |_| |_| |_|_____|_| \_\_____/_/   \_\_____|</pre>
+    <div class="line"><span class="ok">[ OK ]</span> mounting <span class="tag">/dev/vault</span></div>
+    <div class="line"><span class="ok">[ OK ]</span> resolving trade routes... <span class="tag">ETHEREAL.NET</span></div>
+    <div class="line"><span class="ok">[ OK ]</span> decrypting inventory index</div>
+    <div class="line">[ .. ] syncing listings <span class="cursor"></span></div>
+    <div class="loadwrap">
+      <div class="loadbar"><div class="loadfill"></div></div>
+    </div>
+    <div class="prompt">C:\ETHEREAL&gt; run market.exe<span class="cursor"></span></div>
+  </div>
+  <div class="scan"></div>
+  <div class="glow"></div>
+
+  <div class="market">
+    <div class="hud">
+      <div class="hud-logo">ETHEREAL_</div>
+      <div class="hud-tabs">
+        <div class="hud-tab on">SHOP</div>
+        <div class="hud-tab">INVENTORY</div>
+        <div class="hud-tab">VAULT</div>
+      </div>
+      <div class="hud-coin">CR: 4120</div>
+    </div>
+    <div class="sec-title">featured_drops.log</div>
+    <div class="grid">
+      <div class="card" style="--rc:#ffb000">
+        <div class="icon"><svg width="60" height="60" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#ffb000" stroke-width="1.2"/></svg></div>
+        <div class="name">void_reaper_blade</div>
+        <div class="rarity">LEGENDARY</div>
+        <div class="price">2400 CR</div>
+        <div class="row"><span>stock: 1</span><span>id: 0091</span></div>
+      </div>
+      <div class="card" style="--rc:#39ff6a">
+        <div class="icon"><svg width="60" height="60" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#39ff6a" stroke-width="1.2"/></svg></div>
+        <div class="name">phantom_hood</div>
+        <div class="rarity">EPIC</div>
+        <div class="price">860 CR</div>
+        <div class="row"><span>stock: 3</span><span>id: 0092</span></div>
+      </div>
+      <div class="card" style="--rc:#4f8a5c">
+        <div class="icon"><svg width="60" height="60" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#4f8a5c" stroke-width="1.2"/></svg></div>
+        <div class="name">sky_wisp_wings</div>
+        <div class="rarity">RARE</div>
+        <div class="price">310 CR</div>
+        <div class="row"><span>stock: 8</span><span>id: 0093</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

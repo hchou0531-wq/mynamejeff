@@ -1,16 +1,35 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
-import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound, Sparkles, Send, RefreshCw, Pencil, X, Terminal } from 'lucide-react'
+import { Loader2, ShieldCheck, Lock, Bot, MessageSquare, Package, DollarSign, Clock, CheckCircle2, AlertTriangle, LayoutDashboard, Users, Ticket, Settings, Trash2, Plus, Power, Copy, KeyRound, Sparkles, Send, RefreshCw, Pencil, X, Terminal, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react'
+import { toast } from 'sonner'
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
 const api = async (path, opts = {}) => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('rbx_token') : null
   const res = await fetch(`/api${path}`, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) } })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    err.dbUnavailable = !!data.dbUnavailable
+    throw err
+  }
   return data
 }
-const copy = (t) => { try { navigator.clipboard?.writeText(t) } catch {} }
+async function copy(t) {
+  try { await navigator.clipboard.writeText(t); toast.success('Copied') }
+  catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      toast[ok ? 'success' : 'error'](ok ? 'Copied' : 'Could not copy — select and copy it manually')
+    } catch { toast.error('Could not copy — select and copy it manually') }
+  }
+}
 
 export default function DiscordDashboardPage() {
   const params = useParams()
@@ -25,10 +44,24 @@ export default function DiscordDashboardPage() {
   const [botCfg, setBotCfg] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [toycodes, setToycodes] = useState([])
+  const [pendingFulfillment, setPendingFulfillment] = useState([])
+  const [revRange, setRevRange] = useState('3m')
+  const [revSeries, setRevSeries] = useState([])
+  const [revMonthPick, setRevMonthPick] = useState('')
+  const [revMonthDetail, setRevMonthDetail] = useState(null)
+  const [usersRange, setUsersRange] = useState('3m')
+  const [usersSeries, setUsersSeries] = useState([])
+  const [usersTotal, setUsersTotal] = useState(0)
+  const [ordersTimeframe, setOrdersTimeframe] = useState('all')
+  const [ordersDate, setOrdersDate] = useState('')
+  const [ordersMonth, setOrdersMonth] = useState('')
+  const [ordersYear, setOrdersYear] = useState('')
+  const [ordersPage, setOrdersPage] = useState(1)
+  const [ordersData, setOrdersData] = useState({ orders: [], total: 0, totalPages: 1 })
   const [form, setForm] = useState({ discordBotToken: '', discordClientId: '', discordGuildId: '', discordChannelId: '' })
   const [saving, setSaving] = useState(false)
   const [newAcc, setNewAcc] = useState({ title: '', price: '', imageUrl: '', username: '', password: '', email: '', notes: '' })
-  const [newTc, setNewTc] = useState({ title: '', price: '', imageUrl: '', code: '' })
+  const [newTc, setNewTc] = useState({ title: '', description: '', stock: '1', price: '', imageUrl: '', code: '' })
   const [embeds, setEmbeds] = useState([])
   const emptyEmbed = { id: null, name: '', title: '', description: '', color: '#5865F2', imageUrl: '', thumbnailUrl: '', footerText: '', authorName: '', fields: [] }
   const [embForm, setEmbForm] = useState(emptyEmbed)
@@ -43,17 +76,49 @@ export default function DiscordDashboardPage() {
   useEffect(() => {
     (async () => {
       try { const me = await api('/me'); if (!me?.user?.isAdmin) { setStep('denied'); return } setStep('code') }
-      catch { setStep('denied') }
+      catch (e) {
+        // A database outage or server fault is not "you don't belong here" — showing the
+        // stealth 404 for those made real outages look like a broken/missing page.
+        if (e.dbUnavailable || e.status == null || e.status >= 500) { setStep('unavailable'); return }
+        setStep('denied')
+      }
     })()
   }, [])
 
   const loadAll = useCallback(async () => {
     try {
-      const [ov, bc, ac, tc, em] = await Promise.all([api('/admin/dashboard/overview'), api('/admin/dashboard/bot-config'), api('/admin/dashboard/accounts'), api('/admin/dashboard/toycodes'), api('/admin/dashboard/embeds')])
-      setOverview(ov); setBotCfg(bc.config); setAccounts(ac.accounts || []); setToycodes(tc.toycodes || []); setEmbeds(em.embeds || [])
+      const [ov, bc, ac, tc, em, pf] = await Promise.all([api('/admin/dashboard/overview'), api('/admin/dashboard/bot-config'), api('/admin/dashboard/accounts'), api('/admin/dashboard/toycodes'), api('/admin/dashboard/embeds'), api('/admin/dashboard/toycodes-pending')])
+      setOverview(ov); setBotCfg(bc.config); setAccounts(ac.accounts || []); setToycodes(tc.toycodes || []); setEmbeds(em.embeds || []); setPendingFulfillment(pf.pending || [])
       setForm(f => ({ ...f, discordClientId: bc.config.discordClientId || '', discordGuildId: bc.config.discordGuildId || '', discordChannelId: bc.config.discordChannelId || '' }))
     } catch (e) { setErr(e.message) }
   }, [])
+  const fulfillOrder = async (toycodeId, orderCode, code) => {
+    if (!code.trim()) { setErr('Enter a code first'); return }
+    try { await api(`/admin/dashboard/toycodes/${toycodeId}/fulfill`, { method: 'POST', body: JSON.stringify({ orderCode, code: code.trim() }) }); toast.success('Code delivered — buyer can now /claim it'); await loadAll() } catch (e) { setErr(e.message) }
+  }
+
+  // ----- Analytics -----
+  const loadRevenue = useCallback(async () => {
+    const qs = new URLSearchParams({ range: revRange })
+    if (revMonthPick) qs.set('month', revMonthPick)
+    try { const d = await api(`/admin/dashboard/analytics/revenue?${qs}`); setRevSeries(d.series || []); setRevMonthDetail(d.month || null) } catch (e) { setErr(e.message) }
+  }, [revRange, revMonthPick])
+  const loadUserAnalytics = useCallback(async () => {
+    try { const d = await api(`/admin/dashboard/analytics/users?range=${usersRange}`); setUsersSeries(d.series || []); setUsersTotal(d.total || 0) } catch (e) { setErr(e.message) }
+  }, [usersRange])
+  useEffect(() => { if (step === 'ready' && section === 'analytics') loadRevenue() }, [step, section, loadRevenue])
+  useEffect(() => { if (step === 'ready' && section === 'analytics') loadUserAnalytics() }, [step, section, loadUserAnalytics])
+
+  // ----- Orders browser (timeframe + pagination) -----
+  const loadOrdersPage = useCallback(async () => {
+    const qs = new URLSearchParams({ timeframe: ordersTimeframe, page: String(ordersPage), pageSize: '10' })
+    if (ordersTimeframe === 'date' && ordersDate) qs.set('date', ordersDate)
+    if (ordersTimeframe === 'month' && ordersMonth) qs.set('month', ordersMonth)
+    if (ordersTimeframe === 'year' && ordersYear) qs.set('year', ordersYear)
+    try { const d = await api(`/admin/dashboard/orders?${qs}`); setOrdersData(d) } catch (e) { setErr(e.message) }
+  }, [ordersTimeframe, ordersDate, ordersMonth, ordersYear, ordersPage])
+  useEffect(() => { if (step === 'ready' && section === 'orders') loadOrdersPage() }, [step, section, loadOrdersPage])
+  const setTimeframe = (tf) => { setOrdersTimeframe(tf); setOrdersPage(1) }
 
   const loadBotStatus = useCallback(async () => {
     setStatusLoading(true)
@@ -93,6 +158,20 @@ export default function DiscordDashboardPage() {
   const deleteEmbed = async (id) => { try { await api(`/admin/dashboard/embeds/${id}`, { method: 'DELETE' }); await loadAll() } catch (e) { setErr(e.message) } }
   const postEmbed = async (id) => { setErr(''); try { await api(`/admin/dashboard/embeds/${id}/post`, { method: 'POST', body: JSON.stringify({}) }); setErr('') } catch (e) { setErr(e.message) } }
 
+  // Keep Recent/All orders and Pending fulfillment fresh so new sales show up without a
+  // manual reload. Ticks a visible countdown and re-fetches everything every 90s.
+  const REFRESH_SECONDS = 90
+  const [refreshIn, setRefreshIn] = useState(REFRESH_SECONDS)
+  useEffect(() => {
+    if (step !== 'ready') return
+    const t = setInterval(() => {
+      setRefreshIn(s => {
+        if (s <= 1) { loadAll(); return REFRESH_SECONDS }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearInterval(t)
+  }, [step, loadAll])
   useEffect(() => { if (step === 'ready' && section === 'general' && !botStatus && !statusLoading) loadBotStatus() }, [step, section, botStatus, statusLoading, loadBotStatus])
   useEffect(() => { if (step === 'ready' && section === 'console' && !botStatus && !statusLoading) loadBotStatus() }, [step, section, botStatus, statusLoading, loadBotStatus])
   useEffect(() => { consoleEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [consoleLines])
@@ -113,17 +192,38 @@ export default function DiscordDashboardPage() {
     } catch (e) { setErr(e.message) } finally { setSaving(false) }
   }
   const addAccount = async () => { try { await api('/admin/dashboard/accounts', { method: 'POST', body: JSON.stringify({ ...newAcc, price: Number(newAcc.price) || 0 }) }); setNewAcc({ title: '', price: '', imageUrl: '', username: '', password: '', email: '', notes: '' }); await loadAll() } catch (e) { setErr(e.message) } }
-  const addToycode = async () => { try { await api('/admin/dashboard/toycodes', { method: 'POST', body: JSON.stringify({ ...newTc, price: Number(newTc.price) || 0 }) }); setNewTc({ title: '', price: '', imageUrl: '', code: '' }); await loadAll() } catch (e) { setErr(e.message) } }
+  const addToycode = async () => { try { await api('/admin/dashboard/toycodes', { method: 'POST', body: JSON.stringify({ ...newTc, price: Number(newTc.price) || 0, stock: Number(newTc.stock) || 1 }) }); setNewTc({ title: '', description: '', stock: '1', price: '', imageUrl: '', code: '' }); await loadAll() } catch (e) { setErr(e.message) } }
+  const readImageFile = (file, onDone) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) { setErr('Please choose an image file'); return }
+    if (file.size > 2 * 1024 * 1024) { setErr('Image is too large (max 2MB)'); return }
+    const reader = new FileReader()
+    reader.onload = () => onDone(reader.result)
+    reader.readAsDataURL(file)
+  }
   const del = async (type, id) => { try { await api(`/admin/dashboard/${type}/${id}`, { method: 'DELETE' }); await loadAll() } catch (e) { setErr(e.message) } }
   const assign = async (type, id, orderNumber) => { if (!orderNumber) { setErr('Enter an order number to assign'); return } try { await api('/admin/dashboard/assign', { method: 'POST', body: JSON.stringify({ type, id, orderNumber }) }); await loadAll() } catch (e) { setErr(e.message) } }
+  const [demoOrder, setDemoOrder] = useState(null)
+  const [demoCreating, setDemoCreating] = useState(false)
+  const createDemoOrder = async () => { setDemoCreating(true); setErr(''); try { const d = await api('/admin/dashboard/test-order', { method: 'POST' }); setDemoOrder(d); await loadAll() } catch (e) { setErr(e.message) } finally { setDemoCreating(false) } }
 
   if (step === 'checking') return <Center><Loader2 className="w-8 h-8 animate-spin text-violet-400" /></Center>
   if (step === 'denied') return <Center><div className="text-center"><Lock className="w-10 h-10 text-slate-600 mx-auto mb-3" /><h1 className="text-2xl font-black text-slate-200">404 — Not found</h1><p className="text-slate-500 mt-2 text-sm">This page is not available.</p></div></Center>
+  if (step === 'unavailable') return (
+    <Center>
+      <div className="text-center max-w-sm">
+        <AlertTriangle className="w-10 h-10 mx-auto mb-3" style={{ color: '#a855f7' }} />
+        <h1 className="text-xl font-black text-slate-200">Service temporarily unavailable</h1>
+        <p className="text-slate-400 mt-2 text-sm">The dashboard can&rsquo;t reach the database right now. This is a server-side issue, not a problem with your link.</p>
+        <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 rounded-lg text-sm font-semibold" style={{ background: 'linear-gradient(90deg,#a855f7,#f472b6)', color: '#140a24' }}>Retry</button>
+      </div>
+    </Center>
+  )
   if (step === 'code') return (
     <Center>
       <div className="w-full max-w-sm bg-[#12101f] border border-white/10 rounded-2xl p-6">
         <div className="flex items-center gap-2 mb-1"><ShieldCheck className="w-5 h-5 text-emerald-400" /><h1 className="text-lg font-black text-slate-100">Two-factor verification</h1></div>
-        <p className="text-xs text-slate-400 mb-4">Enter the one-time code from your Admin Console. It expires shortly and works only once.</p>
+        <p className="text-xs text-slate-400 mb-4">Enter the 6-digit code from your authenticator app, or the one-time code shown in your Admin Console if you haven't set one up yet.</p>
         <input value={code} onChange={e => setCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))} onKeyDown={e => { if (e.key === 'Enter') verify() }} placeholder="6-digit code" className="w-full text-center tracking-[0.5em] text-xl font-bold bg-black/40 border border-white/10 rounded-lg py-3 text-slate-100 outline-none focus:border-violet-500" />
         {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
         <button onClick={verify} disabled={verifying || code.length < 6} className="w-full mt-4 py-2.5 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-600 font-bold text-white disabled:opacity-50 flex items-center justify-center gap-2">{verifying ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unlock dashboard'}</button>
@@ -133,7 +233,7 @@ export default function DiscordDashboardPage() {
 
   const s = overview?.stats || {}
   const online = botStatus ? botStatus.ready : !!overview?.botOnline
-  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['embeds', 'Embeds', Sparkles], ['console', 'Bot Console', Terminal], ['general', 'General', Settings]]
+  const NAV = [['overview', 'Overview', LayoutDashboard], ['orders', 'Orders', Package], ['analytics', 'Analytics', TrendingUp], ['profiles', 'Profiles', Users], ['toycodes', 'Toy Codes', Ticket], ['embeds', 'Embeds', Sparkles], ['console', 'Bot Console', Terminal], ['general', 'General', Settings]]
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
   return (
@@ -159,6 +259,7 @@ export default function DiscordDashboardPage() {
           <div className="ml-auto flex items-center gap-2">
             <select value={section} onChange={e => setSection(e.target.value)} className="md:hidden bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-sm">{NAV.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
             <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs ${overview?.botConfigured ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}><Bot className="w-3.5 h-3.5" /> {overview?.botConfigured ? 'configured' : 'no token'}</span>
+            <a href="/" className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-colors"><ChevronLeft className="w-3.5 h-3.5" /> Back to site</a>
           </div>
         </header>
 
@@ -175,11 +276,103 @@ export default function DiscordDashboardPage() {
                 <Stat icon={Users} label="Profiles" value={s.accounts ?? 0} color="violet" />
                 <Stat icon={Ticket} label="Toy codes" value={s.toycodes ?? 0} color="fuchsia" />
               </div>
-              <Panel title="Recent orders" icon={Package}><OrderList orders={overview?.orders} /></Panel>
+              <Panel title="Recent orders" icon={Package} right={<RefreshTimer seconds={refreshIn} />}><OrderList orders={overview?.orders} /></Panel>
             </>
           )}
 
-          {section === 'orders' && <Panel title="All orders & fulfillment" icon={Package}><OrderList orders={overview?.orders} full /></Panel>}
+          {section === 'orders' && (
+            <>
+              <Panel title="Demo test order" icon={Sparkles}>
+                <p className="text-xs text-slate-400 mb-3">Creates a throwaway toy code that's already assigned to a fresh order number, so you can test <code className="mx-1 px-1 bg-black/40 rounded">/claim</code> in Discord without a real sale.</p>
+                <Btn onClick={createDemoOrder} disabled={demoCreating}>{demoCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create demo test order'}</Btn>
+                {demoOrder && (
+                  <div className="mt-4 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                    <p className="text-xs text-emerald-300 font-semibold mb-1">Demo order created — run this in Discord:</p>
+                    <div className="flex items-center gap-2">
+                      <code className="text-sm font-mono bg-black/40 px-2 py-1 rounded flex-1">/claim orderNumber:{demoOrder.orderNumber}</code>
+                      <button onClick={() => copy(demoOrder.orderNumber)} className="text-xs px-2 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-1"><Copy className="w-3.5 h-3.5" /> Copy</button>
+                    </div>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="All orders & fulfillment" icon={Package} right={<RefreshTimer seconds={refreshIn} />}>
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  {[['all', 'All time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['week', 'This week'], ['date', 'Pick date'], ['month', 'Pick month'], ['year', 'Pick year']].map(([k, label]) => (
+                    <button key={k} onClick={() => setTimeframe(k)} className={`text-xs px-3 py-1.5 rounded-lg border ${ordersTimeframe === k ? 'bg-violet-500/15 border-violet-500/40 text-violet-200' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'}`}>{label}</button>
+                  ))}
+                  {ordersTimeframe === 'date' && <input type="date" value={ordersDate} onChange={e => { setOrdersDate(e.target.value); setOrdersPage(1) }} className="inp py-1 text-xs w-auto" />}
+                  {ordersTimeframe === 'month' && <input type="month" value={ordersMonth} onChange={e => { setOrdersMonth(e.target.value); setOrdersPage(1) }} className="inp py-1 text-xs w-auto" />}
+                  {ordersTimeframe === 'year' && <input type="number" placeholder="e.g. 2026" value={ordersYear} onChange={e => { setOrdersYear(e.target.value); setOrdersPage(1) }} className="inp py-1 text-xs w-24" />}
+                </div>
+                <OrderList orders={ordersData.orders} full />
+                <Pager page={ordersData.page || 1} totalPages={ordersData.totalPages || 1} onPage={setOrdersPage} />
+              </Panel>
+            </>
+          )}
+
+          {section === 'analytics' && (
+            <>
+              <Panel title="Revenue" icon={DollarSign} right={<RangePicker value={revRange} onChange={setRevRange} />}>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={revSeries.map(s => ({ ...s, label: monthLabel(s.month) }))} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
+                          <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={50} tickFormatter={v => `$${v}`} />
+                      <RTooltip contentStyle={{ background: '#12101f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#e2e8f0' }} labelStyle={{ color: '#94a3b8' }} formatter={(v, n) => n === 'revenue' ? [`$${Number(v).toFixed(2)}`, 'Revenue'] : [v, 'Orders']} />
+                      <Area type="monotone" dataKey="revenue" stroke="#8b5cf6" strokeWidth={2.5} fill="url(#revFill)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">
+                  {revSeries.map(s => (
+                    <div key={s.month} className="p-2.5 rounded-lg bg-black/30 border border-white/5 text-center">
+                      <p className="text-[10px] uppercase tracking-wider text-slate-500">{monthLabel(s.month)}</p>
+                      <p className="text-sm font-black text-violet-300">${s.revenue.toFixed(2)}</p>
+                      <p className="text-[10px] text-slate-500">{s.orders} order{s.orders === 1 ? '' : 's'}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-5 pt-4 border-t border-white/5">
+                  <p className="text-xs text-slate-400 mb-2">Look up a specific month</p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <input type="month" value={revMonthPick} onChange={e => setRevMonthPick(e.target.value)} className="inp py-1.5 text-sm w-auto" />
+                    {revMonthPick && revMonthDetail && (
+                      <div className="flex items-center gap-4 text-sm">
+                        <span className="text-slate-400">Revenue: <span className="text-violet-300 font-bold">${revMonthDetail.revenue.toFixed(2)}</span></span>
+                        <span className="text-slate-400">Orders: <span className="text-violet-300 font-bold">{revMonthDetail.orders}</span></span>
+                      </div>
+                    )}
+                    {revMonthPick && <button onClick={() => setRevMonthPick('')} className="text-xs text-slate-500 hover:text-white">Clear</button>}
+                  </div>
+                </div>
+              </Panel>
+
+              <Panel title="Registered users" icon={Users} right={<RangePicker value={usersRange} onChange={setUsersRange} />}>
+                <div className="flex items-baseline gap-2 mb-4">
+                  <span className="text-3xl font-black text-violet-300">{usersTotal}</span>
+                  <span className="text-sm text-slate-500">total registered users</span>
+                </div>
+                <div className="h-48 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={usersSeries.map(s => ({ ...s, label: monthLabel(s.month) }))} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={30} allowDecimals={false} />
+                      <RTooltip contentStyle={{ background: '#12101f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#e2e8f0' }} labelStyle={{ color: '#94a3b8' }} formatter={v => [v, 'New signups']} />
+                      <Bar dataKey="signups" fill="#8b5cf6" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </Panel>
+            </>
+          )}
 
           {section === 'profiles' && (
             <>
@@ -201,12 +394,30 @@ export default function DiscordDashboardPage() {
 
           {section === 'toycodes' && (
             <>
+              <Panel title={`Pending fulfillment (${pendingFulfillment.length})`} icon={Clock} right={<RefreshTimer seconds={refreshIn} />}>
+                <p className="text-xs text-slate-400 mb-3">Paid orders waiting on their code. Buyers see a "please wait" message via <code className="mx-1 px-1 bg-black/40 rounded">/claim</code> until you enter one here.</p>
+                {pendingFulfillment.length === 0 ? <p className="text-sm text-slate-500 py-4 text-center">Nothing pending — every paid order has its code.</p> : (
+                  <div className="space-y-2">
+                    {pendingFulfillment.map(p => <PendingFulfillmentRow key={p.orderCode} p={p} onFulfill={fulfillOrder} />)}
+                  </div>
+                )}
+              </Panel>
               <Panel title="Add toy code" icon={Plus}>
-                <div className="grid sm:grid-cols-2 gap-2">
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">Thumbnail image</label>
+                    <div className="flex items-center gap-3">
+                      {newTc.imageUrl && <img src={newTc.imageUrl} alt="" className="w-14 h-14 rounded-lg object-cover bg-black/40 border border-white/10" />}
+                      <input type="file" accept="image/*" onChange={e => readImageFile(e.target.files?.[0], dataUrl => setNewTc({ ...newTc, imageUrl: dataUrl }))} className="text-xs text-slate-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border file:border-white/10 file:bg-white/5 file:text-slate-200 file:text-xs" />
+                    </div>
+                  </div>
                   <Inp v={newTc.title} set={x => setNewTc({ ...newTc, title: x })} ph="Title (e.g. Roblox Toy - Ninja)" />
-                  <Inp v={newTc.price} set={x => setNewTc({ ...newTc, price: x })} ph="Price (USD)" type="number" />
-                  <Inp v={newTc.code} set={x => setNewTc({ ...newTc, code: x })} ph="Toy code (e.g. ABC-123-XYZ)" />
-                  <Inp v={newTc.imageUrl} set={x => setNewTc({ ...newTc, imageUrl: x })} ph="Image URL (optional)" />
+                  <textarea value={newTc.description} onChange={e => setNewTc({ ...newTc, description: e.target.value })} placeholder="Description (shown on the item's page to customers)" className="inp w-full min-h-[70px]" />
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    <Inp v={newTc.stock} set={x => setNewTc({ ...newTc, stock: x })} ph="Stock (quantity)" type="number" />
+                    <Inp v={newTc.price} set={x => setNewTc({ ...newTc, price: x })} ph="Price (USD)" type="number" />
+                  </div>
+                  <Inp v={newTc.code} set={x => setNewTc({ ...newTc, code: x })} ph="Code (optional — leave blank, enter it per order after each sale)" />
                 </div>
                 <div className="flex justify-end mt-3"><Btn onClick={addToycode}>Add toy code</Btn></div>
               </Panel>
@@ -365,12 +576,47 @@ function Stat({ icon: Icon, label, value, color }) {
   const c = { violet: 'text-violet-300', emerald: 'text-emerald-300', amber: 'text-amber-300', sky: 'text-sky-300', fuchsia: 'text-fuchsia-300' }[color] || 'text-slate-300'
   return <div className="bg-[#12101f]/60 border border-white/5 rounded-2xl p-4"><div className="flex items-center gap-2 text-slate-500 text-[11px] uppercase tracking-wider"><Icon className="w-3.5 h-3.5" /> {label}</div><p className={`text-2xl font-black mt-1 ${c}`}>{value}</p></div>
 }
-function Panel({ title, icon: Icon, children }) { return <section className="bg-[#12101f]/60 border border-white/5 rounded-2xl p-5"><h2 className="font-black mb-4 flex items-center gap-2">{Icon && <Icon className="w-5 h-5 text-violet-400" />} {title}</h2>{children}</section> }
+function Panel({ title, icon: Icon, right, children }) { return <section className="bg-[#12101f]/60 border border-white/5 rounded-2xl p-5"><h2 className="font-black mb-4 flex items-center gap-2">{Icon && <Icon className="w-5 h-5 text-violet-400" />} {title}{right && <span className="ml-auto">{right}</span>}</h2>{children}</section> }
+function RefreshTimer({ seconds }) { return <span className="flex items-center gap-1 text-[11px] font-normal text-slate-500"><RefreshCw className="w-3 h-3" /> refreshes in {seconds}s</span> }
+function Pager({ page, totalPages, onPage }) {
+  if (totalPages <= 1) return null
+  const nums = []
+  const win = 2
+  for (let p = Math.max(1, page - win); p <= Math.min(totalPages, page + win); p++) nums.push(p)
+  return (
+    <div className="flex items-center justify-center gap-1 mt-4">
+      <button onClick={() => onPage(Math.max(1, page - 1))} disabled={page <= 1} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 disabled:opacity-30 flex items-center justify-center"><ChevronLeft className="w-4 h-4" /></button>
+      {nums[0] > 1 && <>
+        <button onClick={() => onPage(1)} className="w-8 h-8 rounded-lg text-xs bg-white/5 hover:bg-white/10 border border-white/10">1</button>
+        {nums[0] > 2 && <span className="text-slate-600 px-1">…</span>}
+      </>}
+      {nums.map(p => (
+        <button key={p} onClick={() => onPage(p)} className={`w-8 h-8 rounded-lg text-xs border ${p === page ? 'bg-violet-500/20 border-violet-500/40 text-violet-200 font-bold' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'}`}>{p}</button>
+      ))}
+      {nums[nums.length - 1] < totalPages && <>
+        {nums[nums.length - 1] < totalPages - 1 && <span className="text-slate-600 px-1">…</span>}
+        <button onClick={() => onPage(totalPages)} className="w-8 h-8 rounded-lg text-xs bg-white/5 hover:bg-white/10 border border-white/10">{totalPages}</button>
+      </>}
+      <button onClick={() => onPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 disabled:opacity-30 flex items-center justify-center"><ChevronRight className="w-4 h-4" /></button>
+    </div>
+  )
+}
 function Field({ label, children }) { return <div><label className="text-[11px] text-slate-500 block mb-1">{label}</label>{children}</div> }
 function Inp({ v, set, ph, type = 'text' }) { return <input type={type} value={v} onChange={e => set(e.target.value)} placeholder={ph} className="inp" /> }
 const LEVEL_COLOR = { cmd: 'text-violet-300', info: 'text-slate-400', success: 'text-emerald-400', warn: 'text-amber-400', error: 'text-red-400' }
 const LEVEL_TAG = { info: '[info] ', success: '[ ok ] ', warn: '[warn] ', error: '[fail] ', cmd: '' }
 function fmtTime(t) { if (!t) return ''; const d = new Date(t); if (isNaN(d.getTime())) return t; return d.toLocaleTimeString() }
+function monthLabel(m) { const [y, mo] = m.split('-'); return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) }
+const RANGE_OPTIONS = [['3m', '3 months'], ['6m', '6 months'], ['9m', '9 months'], ['1y', '1 year']]
+function RangePicker({ value, onChange }) {
+  return (
+    <div className="flex gap-1">
+      {RANGE_OPTIONS.map(([k, label]) => (
+        <button key={k} onClick={() => onChange(k)} className={`text-xs px-2.5 py-1 rounded-lg border ${value === k ? 'bg-violet-500/15 border-violet-500/40 text-violet-200' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'}`}>{label}</button>
+      ))}
+    </div>
+  )
+}
 function EmbedPreview({ e }) {
   const color = /^#([0-9a-fA-F]{6})$/.test(e.color) ? e.color : '#5865F2'
   const fields = (e.fields || []).filter(f => f && (f.name || f.value))
@@ -398,6 +644,20 @@ function StatusPill({ status }) {
   const m = { available: 'bg-sky-500/15 text-sky-300', sold: 'bg-amber-500/15 text-amber-300', claimed: 'bg-emerald-500/15 text-emerald-300' }
   return <span className={`text-[11px] px-2 py-0.5 rounded-full ${m[status] || 'bg-slate-500/15 text-slate-300'}`}>{status}</span>
 }
+function PendingFulfillmentRow({ p, onFulfill }) {
+  const [code, setCode] = useState('')
+  const [saving, setSaving] = useState(false)
+  const submit = async () => { setSaving(true); try { await onFulfill(p.toycodeId, p.orderCode, code) } finally { setSaving(false) } }
+  return (
+    <div className="p-3 rounded-xl bg-black/30 border border-white/5">
+      <p className="text-sm font-semibold">{p.title} <span className="text-slate-500 font-normal">· order {p.orderCode}{p.discordName ? ` · ${p.discordName}` : ''}</span></p>
+      <div className="flex items-center gap-2 mt-2">
+        <input value={code} onChange={e => setCode(e.target.value)} placeholder="Enter the code to deliver" className="inp flex-1 py-1 text-xs" />
+        <button onClick={submit} disabled={saving} className="text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-600 font-bold text-white disabled:opacity-50">{saving ? '...' : 'Deliver'}</button>
+      </div>
+    </div>
+  )
+}
 function InventoryList({ items, type, onDelete, onAssign }) {
   const [orderNums, setOrderNums] = useState({})
   if (!items || items.length === 0) return <p className="text-sm text-slate-500 py-4 text-center">Nothing here yet.</p>
@@ -408,7 +668,7 @@ function InventoryList({ items, type, onDelete, onAssign }) {
           <div className="flex items-center gap-3">
             {it.imageUrl && <img src={it.imageUrl} className="w-10 h-10 rounded-md object-cover bg-black/40" alt="" />}
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold truncate">{it.title} <span className="text-slate-500 font-normal">· ${Number(it.price || 0).toFixed(2)}</span></p>
+              <p className="text-sm font-semibold truncate">{it.title} <span className="text-slate-500 font-normal">· ${Number(it.price || 0).toFixed(2)}{type === 'toycode' && typeof it.stock === 'number' ? ` · ${it.stock} in stock` : ''}</span></p>
               <p className="text-[11px] text-slate-500 truncate">{type === 'toycode' ? `Code: ${it.code}` : `${it.credentials?.username} / ${it.credentials?.password}${it.credentials?.email ? ' · ' + it.credentials.email : ''}`}{it.claimOrderNumber ? ` · order #${it.claimOrderNumber}` : ''}</p>
             </div>
             <StatusPill status={it.status} />

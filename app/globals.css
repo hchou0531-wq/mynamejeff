@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+    --eth-night1: #140a24;
+    --eth-night2: #2d1454;
+    --eth-night3: #7c3aed;
+    --eth-gold: #a855f7;
+    --eth-gold-dim: #6b21a8;
+    --eth-teal: #c084fc;
+    --eth-lavender: #f472b6;
+    --eth-ink: #f3e8ff;
+    --eth-muted: #a394c7;
+    --eth-common: #9f97b3;
+    --eth-rare: #818cf8;
+    --eth-epic: #f472b6;
+    --eth-legendary: #a855f7;
+}
+
+@keyframes eth-tw { 0%, 100% { opacity: .1 } 50% { opacity: 1 } }
+@keyframes eth-drift { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-14px) } }
+@keyframes eth-blink { 50% { opacity: .25 } }
+
 body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",

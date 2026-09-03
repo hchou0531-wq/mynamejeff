@@ -1,11 +1,15 @@
 const nextConfig = {
   output: 'standalone',
+  // Lets the test harness build into its own directory (NEXT_DIST_DIR=.next-test) so a test
+  // run can't clobber the build cache of a dev server already running from this folder.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   allowedDevOrigins: [
     'roblox-market-24.preview.emergentagent.com',
     'roblox-market-24.cluster-5.preview.emergentcf.cloud',
     '*.preview.emergentagent.com',
     '*.emergentagent.com',
     '*.emergentcf.cloud',
+    '*.trycloudflare.com',
   ],
   images: {
     unoptimized: true,

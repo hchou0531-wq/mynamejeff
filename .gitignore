@@ -87,3 +87,9 @@ node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
 credentials.json
 *.key
 .credentials
+.next-test/
+.localdb/
+
+# Claude Code local settings (can contain permission-allowlist commands with live
+# secrets/credentials pasted in during debugging sessions — never share this file)
+.claude/settings.local.json

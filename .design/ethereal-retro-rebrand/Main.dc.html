@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Press+Start+2P&family=VT323&display=swap">
+  <style>
+    :root{
+      --night1:#150c29; --night2:#2a1454; --night3:#3a1f66;
+      --gold:#e8c468; --gold-dim:#a8863f;
+      --teal:#7fe7d8; --lavender:#b79aff;
+      --ink:#f2ecff; --muted:#9c8fc4;
+      --common:#a99fc4; --rare:#7fb8ff; --epic:#c48bff; --legendary:#e8c468;
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--night1);font-family:'VT323',monospace;}
+    a{color:var(--teal);} a:hover{color:var(--gold);}
+    .page{width:1280px;position:relative;overflow:hidden;
+      background:radial-gradient(ellipse 1000px 700px at 50% 20%, var(--night3) 0%, var(--night2) 45%, var(--night1) 100%);}
+
+    .stars{position:absolute;inset:0;z-index:1;}
+    .star{position:absolute;width:2px;height:2px;background:var(--teal);border-radius:50%;
+      box-shadow:0 0 6px var(--teal);animation:tw 3s ease-in-out infinite;}
+    @keyframes tw{0%,100%{opacity:.1}50%{opacity:1}}
+    .orb{position:absolute;border-radius:50%;filter:blur(2px);opacity:.5;animation:drift 7s ease-in-out infinite;}
+    @keyframes drift{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
+
+    /* ---- Loading screen ---- */
+    .boot{height:820px;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;z-index:2;}
+    .frame{position:absolute;inset:36px;border:3px solid var(--gold-dim);pointer-events:none;}
+    .frame::before,.frame::after{content:'';position:absolute;width:26px;height:26px;border:3px solid var(--gold);}
+    .frame::before{top:-3px;left:-3px;border-right:none;border-bottom:none;}
+    .frame::after{bottom:-3px;right:-3px;border-left:none;border-top:none;}
+    .crest{width:64px;height:64px;margin-bottom:18px;}
+    .wordmark{font-family:'Cinzel',serif;font-weight:700;font-size:64px;letter-spacing:10px;color:var(--ink);
+      text-shadow:0 0 18px rgba(127,231,216,0.6), 0 0 40px rgba(183,154,255,0.4);margin:0;}
+    .tagline{font-family:'VT323',monospace;font-size:24px;letter-spacing:5px;color:var(--gold);margin-top:16px;}
+    .loadwrap{margin-top:60px;width:560px;}
+    .loadlabel{display:flex;justify-content:space-between;font-size:18px;color:var(--muted);letter-spacing:3px;margin-bottom:8px;font-family:'Press Start 2P',monospace;font-size:10px;}
+    .loadbar{height:20px;border:2px solid var(--gold);background:rgba(21,12,41,0.8);position:relative;overflow:hidden;
+      box-shadow:0 0 14px rgba(232,196,104,0.35), inset 0 0 8px rgba(0,0,0,0.6);}
+    .loadfill{position:absolute;inset:0;width:0%;background:linear-gradient(90deg, var(--teal), var(--lavender));
+      animation:fillbar 3.8s ease-in-out infinite alternate;box-shadow:0 0 16px var(--teal);}
+    @keyframes fillbar{0%{width:8%}100%{width:88%}}
+    .press{margin-top:38px;font-family:'Press Start 2P',monospace;font-size:13px;letter-spacing:2px;color:var(--teal);
+      animation:blink 1.2s steps(1) infinite;}
+    @keyframes blink{50%{opacity:.25}}
+    .flavor{margin-top:16px;font-size:16px;color:var(--muted);letter-spacing:1px;font-style:italic;}
+
+    /* ---- Market GUI ---- */
+    .market{padding:48px 64px 68px;position:relative;z-index:2;}
+    .hud{display:flex;align-items:center;gap:26px;padding:16px 24px;
+      background:linear-gradient(180deg, rgba(232,196,104,0.1), rgba(21,12,41,0.4));
+      border:2px solid var(--gold-dim);}
+    .hud-logo{font-family:'Cinzel',serif;font-weight:700;font-size:19px;color:var(--ink);letter-spacing:2px;}
+    .hud-tabs{display:flex;gap:8px;flex-grow:1;}
+    .hud-tab{font-family:'Press Start 2P',monospace;font-size:10px;letter-spacing:1px;color:var(--muted);
+      padding:11px 18px;border:1px solid rgba(156,143,196,0.35);}
+    .hud-tab.on{color:var(--night1);background:var(--gold);border-color:var(--gold);}
+    .hud-coin{display:flex;align-items:center;gap:8px;font-family:'VT323',monospace;font-size:24px;color:var(--gold);}
+    .sec-title{font-family:'Cinzel',serif;font-weight:600;font-size:24px;color:var(--ink);letter-spacing:3px;
+      margin:38px 0 22px;text-align:center;position:relative;}
+    .sec-title::before,.sec-title::after{content:'';display:inline-block;width:60px;height:1px;background:var(--gold-dim);vertical-align:middle;margin:0 16px;}
+    .grid{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:24px;}
+    .card{background:linear-gradient(180deg, rgba(58,31,102,0.5), rgba(21,12,41,0.85));
+      border:2px solid var(--rc,var(--common));padding:20px;position:relative;}
+    .card::before{content:'';position:absolute;top:6px;left:6px;right:6px;bottom:6px;border:1px solid color-mix(in srgb, var(--rc,var(--common)) 45%, transparent);pointer-events:none;}
+    .card .icon{width:100%;height:130px;display:flex;align-items:center;justify-content:center;
+      background:radial-gradient(circle, color-mix(in srgb, var(--rc,var(--common)) 20%, transparent), transparent 70%);margin-bottom:14px;}
+    .card .name{font-family:'VT323',monospace;font-size:22px;color:var(--ink);letter-spacing:1px;text-align:center;}
+    .card .rarity{font-family:'Press Start 2P',monospace;font-size:8px;letter-spacing:1px;color:var(--rc,var(--common));margin:10px 0;text-align:center;}
+    .card .price{display:flex;align-items:center;justify-content:center;gap:8px;font-family:'VT323',monospace;font-size:22px;color:var(--gold);}
+  </style>
+</helmet>
+
+<div class="page">
+  <div class="stars">
+    <div class="star" style="top:10%;left:12%;animation-delay:.2s"></div>
+    <div class="star" style="top:18%;left:82%;animation-delay:.9s"></div>
+    <div class="star" style="top:7%;left:48%;animation-delay:1.4s"></div>
+    <div class="star" style="top:28%;left:68%;animation-delay:.6s"></div>
+    <div class="star" style="top:14%;left:22%;animation-delay:1.8s"></div>
+    <div class="star" style="top:33%;left:90%;animation-delay:2.2s"></div>
+    <div class="orb" style="top:15%;left:15%;width:10px;height:10px;background:var(--teal);box-shadow:0 0 20px var(--teal)"></div>
+    <div class="orb" style="top:24%;left:78%;width:14px;height:14px;background:var(--lavender);box-shadow:0 0 24px var(--lavender);animation-delay:2s"></div>
+    <div class="orb" style="top:34%;left:40%;width:8px;height:8px;background:var(--gold);box-shadow:0 0 18px var(--gold);animation-delay:1s"></div>
+  </div>
+
+  <div class="boot">
+    <div class="frame"></div>
+    <svg class="crest" viewBox="0 0 64 64"><polygon points="32,4 58,20 58,44 32,60 6,44 6,20" fill="none" stroke="#e8c468" stroke-width="2"/><polygon points="32,16 46,24 46,40 32,48 18,40 18,24" fill="none" stroke="#7fe7d8" stroke-width="1.5"/></svg>
+    <h1 class="wordmark">ETHEREAL</h1>
+    <div class="tagline">A REALM OF RARE FINDS</div>
+    <div class="loadwrap">
+      <div class="loadlabel"><span>ENTERING THE VAULT</span><span>88%</span></div>
+      <div class="loadbar"><div class="loadfill"></div></div>
+    </div>
+    <div class="flavor">"The ethereal winds carry treasures from realms unknown..."</div>
+    <div class="press">PRESS START</div>
+  </div>
+
+  <div class="market">
+    <div class="hud">
+      <div class="hud-logo">ETHEREAL</div>
+      <div class="hud-tabs">
+        <div class="hud-tab on">SHOP</div>
+        <div class="hud-tab">INVENTORY</div>
+        <div class="hud-tab">VAULT</div>
+      </div>
+      <div class="hud-coin">
+        <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#e8c468" stroke-width="2"/><path d="M10 6v8M7 8h6M7 12h6" stroke="#e8c468" stroke-width="1.5"/></svg>
+        4,120
+      </div>
+    </div>
+    <div class="sec-title">FEATURED DROPS</div>
+    <div class="grid">
+      <div class="card" style="--rc:#e8c468">
+        <div class="icon"><svg width="70" height="70" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#e8c468" stroke-width="1.5"/></svg></div>
+        <div class="name">Void Reaper Blade</div>
+        <div class="rarity">LEGENDARY</div>
+        <div class="price">
+          <svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#e8c468" stroke-width="2"/></svg>
+          2,400
+        </div>
+      </div>
+      <div class="card" style="--rc:#c48bff">
+        <div class="icon"><svg width="70" height="70" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#c48bff" stroke-width="1.5"/></svg></div>
+        <div class="name">Phantom Hood</div>
+        <div class="rarity">EPIC</div>
+        <div class="price">
+          <svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#e8c468" stroke-width="2"/></svg>
+          860
+        </div>
+      </div>
+      <div class="card" style="--rc:#7fb8ff">
+        <div class="icon"><svg width="70" height="70" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,22 6,22 2,9" fill="none" stroke="#7fb8ff" stroke-width="1.5"/></svg></div>
+        <div class="name">Sky Wisp Wings</div>
+        <div class="rarity">RARE</div>
+        <div class="price">
+          <svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#e8c468" stroke-width="2"/></svg>
+          310
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
