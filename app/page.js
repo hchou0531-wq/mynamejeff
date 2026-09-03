@@ -13,16 +13,19 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Sheet, SheetContent, SheetTitle, SheetClose } from '@/components/ui/sheet'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
   Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
-  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket, X, Send, RefreshCw
+  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket, X, Send, RefreshCw, Menu
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
 const ROBUX_RATE = 80
 const DISCORD_INVITE = 'https://discord.gg/ethereals'
 const CATEGORIES = ['All', 'Limiteds', 'Accessories', 'UGC', 'Collectibles', 'Gear', 'Faces', 'Bundles']
+// Shared by the desktop nav and the mobile drawer so the two can't drift out of sync.
+const NAV_ITEMS = [['browse', 'Shop'], ['toycodes', 'Toy Codes'], ['profiles-store', 'Profiles'], ['reviews', 'Reviews']]
 const CAT_ICONS = { Limiteds: Gem, Accessories: Sparkles, UGC: Package, Collectibles: Star, Gear: Zap, Faces: User, Bundles: LayoutGrid }
 const CONDITIONS = ['All', 'Mint', 'Rare', 'New', 'Used']
 const rbx = (u) => Math.round(u * ROBUX_RATE).toLocaleString()
@@ -115,14 +118,19 @@ function ItemCard({ listing, onOpen }) {
   )
 }
 
-function Logo({ onClick }) {
+// `compactOnMobile`: below ~400px the header row is hamburger + logo + Login/Sign Up all
+// competing for one line — measured, the full "ETHEREAL" wordmark was the single biggest
+// fixed cost in it and pushed Sign Up off the edge. Icon-only there is enough to close the
+// gap without touching the buttons. Only the main header opts in — the footer and the
+// mobile drawer's own header each have the full row to themselves, so the wordmark stays.
+function Logo({ onClick, compactOnMobile }) {
   return (
     <button onClick={onClick} className="flex items-center gap-2.5 group">
       <svg width="32" height="32" viewBox="0 0 64 64" className="shrink-0 group-hover:rotate-6 transition-transform">
         <polygon points="32,4 58,20 58,44 32,60 6,44 6,20" fill="none" stroke="#a855f7" strokeWidth="2.5" />
         <polygon points="32,16 46,24 46,40 32,48 18,40 18,24" fill="none" stroke="#c084fc" strokeWidth="2" />
       </svg>
-      <span className="text-xl font-bold tracking-[0.15em] font-cinzel bg-gradient-to-r from-[#a855f7] to-[#c084fc] bg-clip-text text-transparent">ETHEREAL</span>
+      <span className={`text-xl font-bold tracking-[0.15em] font-cinzel bg-gradient-to-r from-[#a855f7] to-[#c084fc] bg-clip-text text-transparent ${compactOnMobile ? 'hidden sm:inline' : ''}`}>ETHEREAL</span>
     </button>
   )
 }
@@ -138,6 +146,38 @@ const BOOT_ORBS = [
   { top: '24%', left: '78%', size: 14, color: 'var(--eth-lavender)', delay: 2 },
   { top: '38%', left: '40%', size: 8, color: 'var(--eth-gold)', delay: 1 },
 ]
+
+// Replaces the desktop <nav> below md: it's `hidden` there with nothing standing in for
+// it, so the four primary sections (and Admin) were completely unreachable on any phone.
+function MobileNavSheet({ open, setOpen, go, user }) {
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetContent side="left" className="w-[78vw] max-w-xs border-r p-0 flex flex-col" style={{ background: 'rgba(20,10,36,0.98)', borderColor: 'var(--eth-gold-dim)' }}>
+        <SheetTitle className="sr-only">Navigation menu</SheetTitle>
+        <div className="h-16 flex items-center px-4 border-b shrink-0" style={{ borderColor: 'rgba(107,33,168,0.25)' }}>
+          <Logo onClick={() => go('browse')} />
+        </div>
+        <nav className="flex-1 overflow-y-auto py-3">
+          {NAV_ITEMS.map(([name, label]) => (
+            <button
+              key={name}
+              onClick={() => go(name)}
+              className="w-full text-left font-pixel text-[11px] tracking-wider px-5 py-4 border-l-2 border-transparent transition-colors active:text-[var(--eth-ink)] active:border-l-[var(--eth-gold)] active:bg-white/5"
+              style={{ color: 'var(--eth-muted)' }}
+            >
+              {label.toUpperCase()}
+            </button>
+          ))}
+          {user?.isAdmin && (
+            <button onClick={() => go('admin')} className="w-full text-left font-pixel text-[11px] tracking-wider px-5 py-4 border-l-2 border-transparent" style={{ color: 'var(--eth-gold)' }}>
+              ADMIN
+            </button>
+          )}
+        </nav>
+      </SheetContent>
+    </Sheet>
+  )
+}
 
 function BootScreen({ progress, leaving, onSkip }) {
   return (
@@ -162,7 +202,7 @@ function BootScreen({ progress, leaving, onSkip }) {
         </svg>
         <h1 className="font-cinzel font-bold text-5xl md:text-6xl tracking-[0.2em]" style={{ color: 'var(--eth-ink)', textShadow: '0 0 18px rgba(192,132,252,0.6), 0 0 40px rgba(244,114,182,0.4)' }}>ETHEREAL</h1>
         <p className="font-vt text-2xl tracking-[0.3em] mt-3" style={{ color: 'var(--eth-gold)' }}>A REALM OF RARE FINDS</p>
-        <div className="mt-12 w-[320px] md:w-[420px] mx-auto">
+        <div className="mt-12 w-full max-w-[320px] md:max-w-[420px] mx-auto">
           <div className="flex justify-between font-pixel text-[9px] tracking-widest mb-2" style={{ color: 'var(--eth-muted)' }}>
             <span>ENTERING THE VAULT</span><span>{Math.round(progress)}%</span>
           </div>
@@ -194,8 +234,9 @@ export default function App() {
   const [showBoot, setShowBoot] = useState(true)
   const [legalOpen, setLegalOpen] = useState(null) // 'privacy' | 'tos' | 'disclaimer' | null
   const [dbDown, setDbDown] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  const go = (name, params = {}) => { setView({ name, ...params }); window.scrollTo(0, 0) }
+  const go = (name, params = {}) => { setView({ name, ...params }); window.scrollTo(0, 0); setMobileNavOpen(false) }
   const loadMe = useCallback(async () => {
     try { const d = await api('/me'); setDbDown(false); setUser(d.user); return d.user }
     catch (e) {
@@ -245,8 +286,12 @@ export default function App() {
   }
   const unread = notifications.filter(n => !n.read).length
 
+  // flex flex-col + flex-1 on <main>: without this, a short page (an empty marketplace, a
+  // single result) left the footer stranded wherever the content happened to end, with a
+  // huge dead gap below it on any tall/wide monitor instead of sitting at the bottom of the
+  // viewport. This only affects pages shorter than the viewport — taller pages scroll as before.
   return (
-    <div className="min-h-screen text-slate-100" style={{ background: 'radial-gradient(ellipse 1200px 800px at 50% -10%, var(--eth-night3) 0%, var(--eth-night2) 40%, var(--eth-night1) 100%)' }}>
+    <div className="min-h-screen flex flex-col text-slate-100" style={{ background: 'radial-gradient(ellipse 1200px 800px at 50% -10%, var(--eth-night3) 0%, var(--eth-night2) 40%, var(--eth-night1) 100%)' }}>
       {showBoot && <BootScreen progress={bootProgress} leaving={bootLeaving} onSkip={() => bootProgress >= 100 && exitBoot()} />}
       {dbDown && <DbDownBanner api={api} onRecovered={() => { setDbDown(false); window.location.reload() }} />}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
@@ -256,9 +301,19 @@ export default function App() {
 
       <header className="sticky top-0 z-40 backdrop-blur-xl border-b" style={{ background: 'rgba(20,10,36,0.85)', borderColor: 'rgba(107,33,168,0.25)' }}>
         <div className="container mx-auto px-4 h-16 flex items-center gap-4">
-          <Logo onClick={() => go('browse')} />
-          <nav className="hidden md:flex items-center gap-1 ml-2">
-            {[['browse', 'Shop'], ['toycodes', 'Toy Codes'], ['profiles-store', 'Profiles'], ['reviews', 'Reviews']].map(([name, label]) => (
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            className="lg:hidden -ml-2 p-2.5 shrink-0 text-slate-300 hover:text-white transition-colors"
+            aria-label="Open menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <Logo onClick={() => go('browse')} compactOnMobile />
+          {/* lg, not md: measured — Logo + 4 nav buttons + Login/Sign Up genuinely don't fit
+              in 768px (they need ~780px), so the md breakpoint overflowed the header
+              horizontally. The mobile drawer covers everything below lg instead. */}
+          <nav className="hidden lg:flex items-center gap-1 ml-2">
+            {NAV_ITEMS.map(([name, label]) => (
               <button key={name} onClick={() => go(name)} className="font-pixel text-[10px] tracking-wider px-3.5 py-2.5 border border-transparent transition-colors" style={{ color: 'var(--eth-muted)' }}
                 onMouseEnter={e => { e.currentTarget.style.color = 'var(--eth-ink)'; e.currentTarget.style.borderColor = 'rgba(107,33,168,0.5)' }}
                 onMouseLeave={e => { e.currentTarget.style.color = 'var(--eth-muted)'; e.currentTarget.style.borderColor = 'transparent' }}>{label.toUpperCase()}</button>
@@ -288,7 +343,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="relative z-10">
+      <main className="relative z-10 flex-1">
         {view.name === 'browse' && <BrowseView api={api} go={go} initialCategory={view.category} initialSearch={view.search} />}
         {view.name === 'toycodes' && <ToyCodesView api={api} go={go} requireAuth={requireAuth} user={user} />}
         {view.name === 'toycode' && <ToyCodeDetailView api={api} go={go} id={view.id} requireAuth={requireAuth} user={user} />}
@@ -306,7 +361,10 @@ export default function App() {
       <footer className="relative z-10 border-t mt-20 py-10" style={{ borderColor: 'rgba(107,33,168,0.2)' }}>
         <div className="container mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-6 text-sm" style={{ color: 'var(--eth-muted)' }}>
           <Logo onClick={() => go('browse')} />
-          <div className="text-center max-w-xl space-y-1.5">
+          {/* min-w-0: a flex child with text defaults to a min-width based on its content,
+              not 0 — without this the footer's middle block refused to shrink below its
+              un-wrapped width and pushed the Discord block past the right edge at ~768px. */}
+          <div className="text-center max-w-xl space-y-1.5 min-w-0">
             <p>An original marketplace demo. Not affiliated with or endorsed by Roblox Corporation. Payments are processed in cryptocurrency via CoinGate.</p>
             <div className="flex items-center justify-center gap-1.5 font-pixel text-[8px] tracking-wider">
               <button onClick={() => setLegalOpen('privacy')} className="hover:text-[var(--eth-gold)] transition-colors">PRIVACY POLICY</button>
@@ -334,6 +392,7 @@ export default function App() {
       <SupportChat api={api} user={user} />
       <AuthDialog open={authOpen} setOpen={setAuthOpen} mode={authMode} setMode={setAuthMode} api={api} onAuthed={async (u) => { setUser(u); setAuthOpen(false); await loadNotifs(); toast.success(`Welcome, ${u.username}!`); if (u.isAdmin) go('admin') }} />
       <NotifDialog open={notifOpen} setOpen={setNotifOpen} notifications={notifications} />
+      <MobileNavSheet open={mobileNavOpen} setOpen={setMobileNavOpen} go={go} user={user} />
     </div>
   )
 }
@@ -1005,7 +1064,10 @@ function DigitalGoodCard({ good, requireAuth, onOpen, onBuy }) {
           {rarity ? <p className="text-[10px] font-semibold tracking-widest mt-0.5" style={{ color: rarity.color }}>{rarity.label}</p>
             : good.description ? <p className="text-xs truncate mt-0.5" style={{ color: 'var(--eth-muted)' }}>{good.description}</p> : null}
         </div>
-        <div className="flex items-center justify-between pt-2.5 border-t" style={{ borderColor: 'rgba(107,33,168,0.25)' }}>
+        {/* wrap, not nowrap: on a narrow 2-up mobile grid, price + button don't both fit on
+            one line — nowrap let the button get clipped by this card's own overflow-hidden
+            instead of wrapping to a second line. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pt-2.5 border-t" style={{ borderColor: 'rgba(107,33,168,0.25)' }}>
           <p className="text-lg font-bold" style={{ color: 'var(--eth-gold)' }}>{usd(good.price)}</p>
           <Button size="sm" disabled={outOfStock} onClick={buy} className="font-semibold h-8 rounded-lg border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>{outOfStock ? 'Sold Out' : 'Buy Now'}</Button>
         </div>
@@ -2671,7 +2733,7 @@ function AdminChatPanel({ api }) {
   }
 
   return (
-    <div className="grid md:grid-cols-[280px_1fr] gap-4 h-[560px]">
+    <div className="grid grid-rows-[220px_1fr] md:grid-rows-none md:grid-cols-[280px_1fr] gap-4 h-[70vh] md:h-[560px]">
       <div className="border overflow-y-auto" style={{ borderColor: 'var(--eth-gold-dim)', background: 'rgba(20,10,36,0.5)' }}>
         {threads.length === 0 && <p className="text-sm p-4" style={{ color: 'var(--eth-muted)' }}>No conversations yet.</p>}
         {threads.map(t => (
