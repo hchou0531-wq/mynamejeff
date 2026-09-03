@@ -271,19 +271,66 @@ function requestOrigin(request) {
   const proto = request.headers.get('x-forwarded-proto') || (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) ? 'http' : 'https')
   return `${proto}://${host}`
 }
-// The origin to bake into an EMAIL. Deliberately NOT requestOrigin() by default.
+// Rejects anything that isn't an absolute http(s) URL instead of silently returning it.
+// A bare domain like "ethereals.lol" (no scheme) concatenated straight into a webhook
+// URL or an <img src> produces a broken relative reference wherever it's used, with
+// nothing in any log pointing at why — an email logo that "just doesn't load", a payment
+// webhook that "just never fires". Loud and specific on purpose.
 //
-// SECURITY (host header injection): requestOrigin() trusts the Host / X-Forwarded-Host
-// header, which the client controls unless a proxy rewrites it. Anyone can trigger a
-// verification email to any address they like, so a request carrying `Host: evil.com`
-// would produce a genuine, correctly-signed Ethereal email whose button points at the
-// attacker — textbook phishing, sent by us, to a victim who never visited evil.com.
-// A link that outlives its request has to come from configuration, not from that request,
-// so a configured canonical URL always wins; requestOrigin() is only a last-resort
-// fallback for local dev where neither var is set (and no real mail is going out anyway).
-function emailSiteUrl(request) {
-  const configured = process.env.APP_URL || process.env.NEXT_PUBLIC_BASE_URL
-  if (configured && configured.trim()) return configured.trim().replace(/\/+$/, '')
+// Deliberately does NOT check that the host resolves or is pointed at this deployment —
+// that's DNS/hosting, not syntax, and "https://a-domain-with-no-DNS-record.example"
+// should still pass: catching that is exactly the kind of infra problem this has no
+// business papering over.
+function normalizeAbsoluteUrl(value, label) {
+  if (!value) return null
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) return null
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('non-http(s) scheme')
+    return trimmed
+  } catch {
+    console.error(`[config] ${label} is set to "${trimmed}", which is not an absolute http(s) URL (missing "https://"?). Ignoring it and falling through to the next option instead — fix it to something like "https://yourdomain.com".`)
+    return null
+  }
+}
+// The ONE place every stable, request-independent link gets its origin from: email
+// CTAs/images, the BlockBee payment webhook's notify/redirect URLs, and Discord's
+// registered interactions endpoint. All three need a URL that's still correct long after
+// the triggering request is gone, so — same reasoning as the old emailSiteUrl() this
+// replaces — none of them can be built from the request's Host header, which the client
+// controls unless a proxy rewrites it. A `Host: evil.com` on a signup would otherwise
+// produce a genuine, correctly-signed Ethereal email pointing at the attacker; on a
+// toycode purchase it would point BlockBee's payment webhook and the post-payment
+// redirect at the attacker instead of back here. (The admin dashboard's own link
+// generation is a different, legitimate case — it WANTS to match whatever origin the
+// admin is currently browsing on, tunnel included — and keeps using requestOrigin()
+// above instead of this.)
+//
+// Resolution order, most to least specific:
+//   1. APP_URL                        — explicit override, always wins.
+//   2. NEXT_PUBLIC_BASE_URL           — legacy explicit override, kept for back-compat
+//      with the BlockBee/Discord code that already read this directly.
+//   3. VERCEL_PROJECT_PRODUCTION_URL  — Vercel's own stable production domain. This is
+//      the point of the whole rewrite: correct on day one with ZERO env vars set, and it
+//      self-updates when a custom domain is added under Vercel → Settings → Domains —
+//      no redeploy, no env var edit, nothing. Vercel sets this automatically; it can't
+//      be forged by a client request the way a header can.
+//   4. VERCEL_URL                     — this deployment's own URL. Still correct (just
+//      not necessarily "the" canonical domain) on preview deployments where (3) isn't
+//      set.
+//   5. requestOrigin(request)         — last resort. In practice this only fires in
+//      local dev (nothing above is set, and there's no real webhook/email traffic to
+//      protect) — every real Vercel deployment always has (3) or (4).
+// (3) and (4) are bare hostnames with no scheme; Vercel deployments are always HTTPS, so
+// that's hardcoded rather than guessed.
+function publicSiteUrl(request) {
+  const configured =
+    normalizeAbsoluteUrl(process.env.APP_URL, 'APP_URL') ||
+    normalizeAbsoluteUrl(process.env.NEXT_PUBLIC_BASE_URL, 'NEXT_PUBLIC_BASE_URL') ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null) ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null)
+  if (configured) return configured
   return requestOrigin(request)
 }
 
@@ -408,8 +455,11 @@ async function blockbeeGet(path, params = {}) {
 }
 
 // Hosted checkout: returns { payment_id, payment_url }
-async function blockbeeCreateCheckout(order, listing) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL
+async function blockbeeCreateCheckout(order, listing, request) {
+  // Used to read process.env.NEXT_PUBLIC_BASE_URL directly with no fallback at all — if
+  // that var was ever unset, this silently built "undefined/api/payments/callback?...".
+  // publicSiteUrl() is the same safe, Vercel-aware resolution used everywhere else now.
+  const base = publicSiteUrl(request)
   const notify = `${base}/api/payments/callback?order_id=${encodeURIComponent(order.orderId)}&nonce=${encodeURIComponent(order.nonce)}`
   const redirect = `${base}/?payment=success&orderId=${encodeURIComponent(order.orderId)}`
   return blockbeeGet('/checkout/request/', {
@@ -1327,7 +1377,10 @@ async function handleRoute(request, { params }) {
         return json({ orderCode, checkoutUrl: null, simulated: true })
       }
       try {
-        const base = requestOrigin(request)
+        // NOT requestOrigin() — this buyer's own Host header controlling where BlockBee's
+        // payment webhook and post-payment redirect point would be the same class of bug
+        // fixed for email links; see publicSiteUrl()'s comment.
+        const base = publicSiteUrl(request)
         const notifyUrl = `${base}/api/payments/callback?order_id=${encodeURIComponent(order.orderId)}&nonce=${encodeURIComponent(order.nonce)}`
         const redirectUrl = `${base}/order/${orderCode}`
         const bb = await blockbeeGet('/checkout/request/', {
@@ -1504,7 +1557,7 @@ async function handleRoute(request, { params }) {
         // its password — otherwise this becomes a way to reset someone else's credentials.
         if (!existingEmail.emailVerified) {
           const canSend = await canSendVerificationEmail(db, email)
-          if (canSend.allowed) await issueVerificationCode(db, existingEmail.id, email, emailSiteUrl(request))
+          if (canSend.allowed) await issueVerificationCode(db, existingEmail.id, email, publicSiteUrl(request))
         }
         return json(GENERIC_OK)
       }
@@ -1537,7 +1590,7 @@ async function handleRoute(request, { params }) {
       }
       const canSend = await canSendVerificationEmail(db, email)
       if (canSend.allowed) {
-        const sent = await issueVerificationCode(db, user.id, email, emailSiteUrl(request))
+        const sent = await issueVerificationCode(db, user.id, email, publicSiteUrl(request))
         await logSecurityEvent(db, sent ? 'verification_email_sent' : 'verification_email_send_failed', { userId: user.id })
       }
       return json(GENERIC_OK)
@@ -1609,7 +1662,7 @@ async function handleRoute(request, { params }) {
         await logSecurityEvent(db, 'resend_rate_limited', { ip, userId: user.id })
         return tooMany(canSend.retryAfterSec)
       }
-      const sent = await issueVerificationCode(db, user.id, email, emailSiteUrl(request))
+      const sent = await issueVerificationCode(db, user.id, email, publicSiteUrl(request))
       await logSecurityEvent(db, sent ? 'verification_email_sent' : 'verification_email_send_failed', { userId: user.id, via: 'resend' })
       return json(GENERIC)
     }
@@ -1757,7 +1810,7 @@ async function handleRoute(request, { params }) {
         return json({ orderId: order.orderId, checkoutUrl: null, simulated: true })
       }
       try {
-        const bb = await blockbeeCreateCheckout(order, listing)
+        const bb = await blockbeeCreateCheckout(order, listing, request)
         await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { blockbeePaymentId: String(bb.payment_id), checkoutUrl: bb.payment_url } })
         return json({ orderId: order.orderId, checkoutUrl: bb.payment_url })
       } catch (e) {
@@ -2345,7 +2398,7 @@ async function handleRoute(request, { params }) {
           const rc = await discordApi(token, 'GET', `/applications/${cfg.discordClientId}/guilds/${cfg.discordGuildId}/commands`)
           if (rc.ok && Array.isArray(rc.data)) { commands = rc.data.map(c => c.name); commandsRegistered = commands.length > 0 }
         }
-        const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        const base = publicSiteUrl(request)
         const endpointUrl = `${base}/api/discord/interactions`
         let endpointConfigured = false, currentEndpoint = null
         if (token) {
@@ -2434,7 +2487,7 @@ async function handleRoute(request, { params }) {
         }
 
         // 7) Set + verify the interactions endpoint URL on the Discord application
-        const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+        const base = publicSiteUrl(request)
         const endpoint = `${base}/api/discord/interactions`
         if (token && process.env.DISCORD_PUBLIC_KEY) {
           L('info', 'Reading application settings (GET /applications/@me)…')
