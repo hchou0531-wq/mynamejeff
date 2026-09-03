@@ -8,7 +8,9 @@ import dns from 'dns'
 // Some networks only advertise an IPv6 link-local DNS server, which Node's resolver
 // can't query (ECONNREFUSED on SRV lookups for the mongodb+srv:// connection string).
 // Force known-good public resolvers so Mongo DNS lookups don't depend on the local network.
-dns.setServers(['8.8.8.8', '1.1.1.1'])
+// Skipped on Vercel: the platform's own resolver is the correct one there, and overriding it
+// process-wide can break the very SRV lookup this was meant to protect.
+if (!process.env.VERCEL) dns.setServers(['8.8.8.8', '1.1.1.1'])
 
 // ---------------- MongoDB ----------------
 // Raised when the database can't be reached, so the router can answer 503 ("try again")
@@ -24,23 +26,38 @@ function isConnectivityError(err) {
 let clientPromise = null
 async function connectToMongo() {
   if (!clientPromise) {
-    // Fail fast. The driver defaults to a 30s server-selection timeout, which made every
-    // request hang for ~30s and the whole site appear frozen whenever Atlas was unreachable.
-    const attempt = new MongoClient(process.env.MONGO_URL, {
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000,
-      socketTimeoutMS: 20000,
-      maxPoolSize: 10,
-    }).connect().then(async (c) => {
-      const db = c.db(process.env.DB_NAME)
-      // TTL indexes so rate-limit counters and CAPTCHA challenges clean themselves up —
-      // created once per server process, not per request.
-      await Promise.all([
-        db.collection('rateLimits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
-        db.collection('captchaChallenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
-      ]).catch(() => {})
-      return c
-    })
+    // `new MongoClient(...)` throws SYNCHRONOUSLY (TypeError / MongoParseError) when
+    // MONGO_URL is missing or malformed — e.g. not yet configured in the deployment
+    // environment. That throw happens before any promise chain exists to catch it, so
+    // without this try/catch it skipped the DbUnavailableError classification below and
+    // surfaced as an opaque 500 "Internal server error" on every single route instead of
+    // the clear "can't reach the database" 503.
+    let attempt
+    try {
+      // Fail fast. The driver defaults to a 30s server-selection timeout, which made every
+      // request hang for ~30s and the whole site appear frozen whenever Atlas was unreachable.
+      attempt = new MongoClient(process.env.MONGO_URL, {
+        serverSelectionTimeoutMS: 5000,
+        connectTimeoutMS: 5000,
+        socketTimeoutMS: 20000,
+        maxPoolSize: 10,
+      }).connect().then(async (c) => {
+        const db = c.db(process.env.DB_NAME)
+        // TTL indexes so rate-limit counters and CAPTCHA challenges clean themselves up —
+        // created once per server process, not per request.
+        await Promise.all([
+          db.collection('rateLimits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+          db.collection('captchaChallenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+          // Expired sessions delete themselves; the unique index also makes token lookup
+          // (which happens on every authenticated request) an index hit rather than a scan.
+          db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+          db.collection('sessions').createIndex({ token: 1 }, { unique: true }),
+        ]).catch(() => {})
+        return c
+      })
+    } catch (err) {
+      attempt = Promise.reject(err)
+    }
     // A rejected promise left in the cache would be re-awaited by every future request,
     // so a single startup blip used to break the site permanently until a manual restart.
     // Clearing it means the next request transparently retries a fresh connection.
@@ -82,8 +99,16 @@ function ensureSeeded(db) {
 function clientIp(request) {
   const trustProxy = String(process.env.TRUST_PROXY ?? 'true').toLowerCase() !== 'false'
   if (trustProxy) {
-    const cf = request.headers.get('cf-connecting-ip')
-    if (cf) return cf.trim()
+    // CF-Connecting-IP is only trustworthy when Cloudflare is genuinely the edge, because
+    // only then does Cloudflare overwrite whatever the client sent. On any other host
+    // (Vercel included) nothing strips it, so a client can send a fresh random value per
+    // request and mint an unlimited number of rate-limit buckets — silently nullifying every
+    // per-IP quota below. Opt in with TRUST_CF_CONNECTING_IP=true only when actually behind
+    // Cloudflare; otherwise fall through to the proxy-appended headers.
+    if (String(process.env.TRUST_CF_CONNECTING_IP ?? 'false').toLowerCase() === 'true') {
+      const cf = request.headers.get('cf-connecting-ip')
+      if (cf) return cf.trim()
+    }
     const xf = request.headers.get('x-forwarded-for')
     if (xf) {
       const hops = xf.split(',').map(s => s.trim()).filter(Boolean)
@@ -210,10 +235,14 @@ function requestOrigin(request) {
 }
 
 function handleCORS(response) {
-  response.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
+  const origin = process.env.CORS_ORIGINS || '*'
+  response.headers.set('Access-Control-Allow-Origin', origin)
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  response.headers.set('Access-Control-Allow-Credentials', 'true')
+  // Credentials mode is incompatible with a wildcard origin (browsers reject the pair
+  // outright), and this API authenticates with a bearer header rather than cookies, so it
+  // is only meaningful when an explicit origin is configured.
+  if (origin !== '*') response.headers.set('Access-Control-Allow-Credentials', 'true')
   return response
 }
 export async function OPTIONS() { return handleCORS(new NextResponse(null, { status: 200 })) }
@@ -224,11 +253,37 @@ function json(data, status = 200) { return handleCORS(NextResponse.json(data, { 
 function clean(doc) { if (!doc) return doc; const { _id, password, totpSecret, totpPendingSecret, ...rest } = doc; return rest }
 function publicUser(u) { if (!u) return null; const { _id, password, email, totpSecret, totpPendingSecret, ...rest } = u; return rest }
 
+// ---------------- Sessions ----------------
+// The bearer token is a random, opaque, expiring credential stored in its own collection —
+// NOT the user's `id`. It used to be the id itself, which meant the primary key doubled as a
+// permanent password: anywhere a user id surfaced (the admin user list, an order record, a
+// database dump, a support export, a log line) was a full account takeover, the token could
+// never be revoked, and signing out only forgot it client-side. Tokens now expire, can be
+// revoked server-side on logout, and a leaked user id is just an identifier again.
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+async function createSession(db, userId) {
+  const token = crypto.randomBytes(32).toString('hex')
+  const now = new Date()
+  await db.collection('sessions').insertOne({
+    token, userId, createdAt: now, expiresAt: new Date(now.getTime() + SESSION_TTL_MS)
+  })
+  return token
+}
 async function getUser(request, db) {
   const auth = request.headers.get('authorization') || ''
   const token = auth.replace('Bearer ', '').trim()
-  if (!token) return null
-  return await db.collection('users').findOne({ id: token })
+  // Only ever a string reaches the query — a JSON body can't smuggle a Mongo operator here,
+  // but headers are stringly-typed anyway; the guard documents the invariant.
+  if (!token || typeof token !== 'string') return null
+  const session = await db.collection('sessions').findOne({ token })
+  if (!session) return null
+  // The TTL index reaps these eventually; check explicitly so an expired token is never
+  // honoured in the window before Mongo's background sweep runs.
+  if (session.expiresAt && new Date(session.expiresAt) <= new Date()) {
+    await db.collection('sessions').deleteOne({ token }).catch(() => {})
+    return null
+  }
+  return await db.collection('users').findOne({ id: session.userId })
 }
 async function notify(db, userId, text, type = 'info') {
   await db.collection('notifications').insertOne({ id: uuidv4(), userId, text, type, read: false, createdAt: new Date() })
@@ -674,13 +729,20 @@ async function claimDeliverable(db, orderNumber, discordUserId, discordUsername)
     return { type: 'account', title: accPending.title, credentials: entry.credentials }
   }
   // 2) Legacy path: admin manually assigned via the dashboard's "Assign to order" (single order per item)
+  // The same ownership check the pendingOrders path above performs. Without it this legacy
+  // branch handed the toy code / account credentials to whichever Discord user typed the
+  // order number first — the buyer's goods delivered to anyone who learned (or guessed) it.
+  // verifyClaimOwner still returns true for orders carrying no Discord identity at all, so
+  // admin-assigned items with nothing to check against keep working exactly as before.
   const tc = await db.collection('toycodes').findOne({ claimOrderNumber: on, status: { $ne: 'claimed' } })
   if (tc) {
+    if (!(await verifyClaimOwner(db, on, discordUserId, discordUsername))) return { type: 'forbidden' }
     await db.collection('toycodes').updateOne({ id: tc.id }, { $set: { status: 'claimed', claimedBy: discordUserId || null, claimedAt: new Date() } })
     return { type: 'toycode', title: tc.title, code: tc.code }
   }
   const acc = await db.collection('accounts').findOne({ claimOrderNumber: on, status: { $ne: 'claimed' } })
   if (acc) {
+    if (!(await verifyClaimOwner(db, on, discordUserId, discordUsername))) return { type: 'forbidden' }
     await db.collection('accounts').updateOne({ id: acc.id }, { $set: { status: 'claimed', claimedBy: discordUserId || null, claimedAt: new Date() } })
     return { type: 'account', title: acc.title, credentials: acc.credentials }
   }
@@ -966,12 +1028,21 @@ async function doSeed(db, force = false) {
   // admin (always ensure exists)
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@robloot.com'
   const existingAdmin = await db.collection('users').findOne({ email: adminEmail })
+  // No default password. This used to fall back to 'admin123', so any deployment where
+  // ADMIN_PASSWORD was forgotten silently published a full-privilege account guarded by a
+  // password that is in every wordlist — at a predictable default email, too. Now the admin
+  // simply isn't created until a real password is configured.
   if (!existingAdmin) {
-    await db.collection('users').insertOne({
-      id: uuidv4(), username: 'Admin', email: adminEmail, password: hashPassword(process.env.ADMIN_PASSWORD || 'admin123'),
-      avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Admin', reputation: 5,
-      isAdmin: true, demo: true, createdAt: new Date()
-    })
+    const adminPassword = process.env.ADMIN_PASSWORD
+    if (adminPassword && adminPassword.length >= 8) {
+      await db.collection('users').insertOne({
+        id: uuidv4(), username: 'Admin', email: adminEmail, password: hashPassword(adminPassword),
+        avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Admin', reputation: 5,
+        isAdmin: true, demo: true, createdAt: new Date()
+      })
+    } else {
+      console.warn('[seed] Admin account not created: set ADMIN_PASSWORD (8+ characters) to provision it.')
+    }
   }
   // ensure at least one house store exists (needed to attribute listings)
   const vendorCount = await db.collection('vendors').countDocuments()
@@ -1011,7 +1082,14 @@ async function handleRoute(request, { params }) {
     if (!globalThrottle.allowed) return tooMany(globalThrottle.retryAfterSec)
 
     if (route === '/' || route === '/root') return json({ message: 'Robloot Marketplace API' })
-    if (route === '/seed' && method === 'POST') return json(await doSeed(db, true))
+    // ADMIN ONLY. doSeed(force) runs deleteMany({}) over `items` and `listings` — this sat
+    // above the auth gate, so any anonymous request could wipe the entire catalog with a
+    // single curl. It is a destructive maintenance action and is gated like one.
+    if (route === '/seed' && method === 'POST') {
+      const seedUser = await getUser(request, db)
+      if (!seedUser || !seedUser.isAdmin) return json({ error: 'Admin only' }, 403)
+      return json(await doSeed(db, true))
+    }
     if (route === '/config' && method === 'GET') return json({ cryptoConfigured: blockbeeConfigured(), provider: 'blockbee', receiveCurrency: process.env.BLOCKBEE_RECEIVE_CURRENCY || 'USDT' })
     if (route === '/captcha/new' && method === 'GET') return json(await createCaptchaChallenge(db))
 
@@ -1100,7 +1178,10 @@ async function handleRoute(request, { params }) {
         return json({ orderCode, checkoutUrl: bb.payment_url })
       } catch (e) {
         await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { status: 'failed', error: e.message } })
-        return json({ error: `Could not create crypto checkout: ${e.message}` }, 502)
+        // Upstream provider messages can carry internal detail (endpoint paths, key state,
+        // account identifiers); log them server-side and hand the client a generic failure.
+        console.error('BlockBee checkout failed:', e.message)
+        return json({ error: 'Could not create crypto checkout. Please try again in a moment.' }, 502)
       }
     }
 
@@ -1235,7 +1316,7 @@ async function handleRoute(request, { params }) {
       }
       await db.collection('users').insertOne(user)
       await notify(db, user.id, 'Welcome to Robloot! Browse the marketplace and pay securely with crypto.', 'success')
-      return json({ token: user.id, user: clean(user) })
+      return json({ token: await createSession(db, user.id), user: clean(user) })
     }
     if (route === '/auth/login' && method === 'POST') {
       const loginRl = await rateLimit(db, `login:${ip}`, { max: 30, windowMs: 15 * 60 * 1000 })
@@ -1276,7 +1357,15 @@ async function handleRoute(request, { params }) {
         }
       }
       await clearLoginAttempts(db, email)
-      return json({ token: user.id, user: clean(user) })
+      return json({ token: await createSession(db, user.id), user: clean(user) })
+    }
+    // Server-side revocation: signing out must actually kill the token, not just forget it
+    // in the browser. Always answers 200 so a stale/absent token isn't an error path.
+    if (route === '/auth/logout' && method === 'POST') {
+      const auth = request.headers.get('authorization') || ''
+      const token = auth.replace('Bearer ', '').trim()
+      if (token) await db.collection('sessions').deleteOne({ token }).catch(() => {})
+      return json({ ok: true })
     }
     if (route === '/me' && method === 'GET') {
       const user = await getUser(request, db)
@@ -1343,7 +1432,11 @@ async function handleRoute(request, { params }) {
       const orderRl = await rateLimit(db, `order:${user.id}`, { max: 10, windowMs: 60 * 60 * 1000 })
       if (!orderRl.allowed) return tooMany(orderRl.retryAfterSec)
       const b = await request.json()
-      const listing = await db.collection('listings').findOne({ id: b.listingId })
+      // Coerced to a string before it reaches the query: a JSON body can carry an object,
+      // and `{"listingId":{"$ne":null}}` would otherwise be read by Mongo as an operator and
+      // match an arbitrary listing rather than the one being bought.
+      const listingId = typeof b.listingId === 'string' ? b.listingId : ''
+      const listing = listingId ? await db.collection('listings').findOne({ id: listingId }) : null
       if (!listing) return json({ error: 'Listing not found' }, 404)
       if (listing.status !== 'active') return json({ error: 'This listing is no longer available' }, 400)
 
@@ -1373,7 +1466,10 @@ async function handleRoute(request, { params }) {
         return json({ orderId: order.orderId, checkoutUrl: bb.payment_url })
       } catch (e) {
         await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { status: 'failed', error: e.message } })
-        return json({ error: `Could not create crypto checkout: ${e.message}` }, 502)
+        // Upstream provider messages can carry internal detail (endpoint paths, key state,
+        // account identifiers); log them server-side and hand the client a generic failure.
+        console.error('BlockBee checkout failed:', e.message)
+        return json({ error: 'Could not create crypto checkout. Please try again in a moment.' }, 502)
       }
     }
 
@@ -1440,7 +1536,10 @@ async function handleRoute(request, { params }) {
       const user = await getUser(request, db)
       if (!user) return json({ error: 'Unauthorized' }, 401)
       const b = await request.json()
-      const order = await db.collection('orders').findOne({ orderId: b.orderId, buyerId: user.id })
+      // String-coerced: `{"orderId":{"$ne":null}}` would otherwise let the caller mark an
+      // arbitrary one of their orders paid rather than the one they named.
+      const simOrderId = typeof b.orderId === 'string' ? b.orderId : ''
+      const order = simOrderId ? await db.collection('orders').findOne({ orderId: simOrderId, buyerId: user.id }) : null
       if (!order) return json({ error: 'Order not found' }, 404)
       await db.collection('orders').updateOne({ orderId: order.orderId }, { $set: { status: 'paid', paidAt: new Date() } })
       await fulfillListing(db, order.listingId)
@@ -1460,9 +1559,13 @@ async function handleRoute(request, { params }) {
       const wishRl = await rateLimit(db, `wishlist:${user.id}`, { max: 60, windowMs: 60 * 60 * 1000 })
       if (!wishRl.allowed) return tooMany(wishRl.retryAfterSec)
       const b = await request.json()
-      const existing = await db.collection('wishlist').findOne({ userId: user.id, itemId: b.itemId })
-      if (existing) { await db.collection('wishlist').deleteOne({ userId: user.id, itemId: b.itemId }); return json({ added: false }) }
-      await db.collection('wishlist').insertOne({ id: uuidv4(), userId: user.id, itemId: b.itemId, createdAt: new Date() })
+      // String-coerced for the same reason as the order route: an object here would be
+      // interpreted as a Mongo operator rather than an item id.
+      const itemId = typeof b.itemId === 'string' ? b.itemId : ''
+      if (!itemId) return json({ error: 'itemId required' }, 400)
+      const existing = await db.collection('wishlist').findOne({ userId: user.id, itemId })
+      if (existing) { await db.collection('wishlist').deleteOne({ userId: user.id, itemId }); return json({ added: false }) }
+      await db.collection('wishlist').insertOne({ id: uuidv4(), userId: user.id, itemId, createdAt: new Date() })
       return json({ added: true })
     }
     if (route.startsWith('/wishlist/') && method === 'DELETE') {
@@ -1477,7 +1580,7 @@ async function handleRoute(request, { params }) {
       const reportRl = await rateLimit(db, `report:${user.id}`, { max: 10, windowMs: 60 * 60 * 1000 })
       if (!reportRl.allowed) return tooMany(reportRl.retryAfterSec)
       const b = await request.json()
-      const report = { id: uuidv4(), listingId: b.listingId, reporterId: user.id, reporterName: user.username, reason: b.reason || 'Suspicious', status: 'open', createdAt: new Date() }
+      const report = { id: uuidv4(), listingId: String(b.listingId || ''), reporterId: user.id, reporterName: user.username, reason: String(b.reason || 'Suspicious').slice(0, 500), status: 'open', createdAt: new Date() }
       await db.collection('reports').insertOne(report)
       return json({ report: clean(report) })
     }

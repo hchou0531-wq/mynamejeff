@@ -236,7 +236,13 @@ export default function App() {
   }, [loadMe, loadNotifs, api, exitBoot])
 
   const requireAuth = (fn) => { if (!user) { setAuthMode('login'); setAuthOpen(true); toast.info('Please sign in to continue'); return } fn() }
-  const logout = () => { localStorage.removeItem('rbx_token'); setUser(null); go('home'); toast.success('Signed out') }
+  // Revoke the session server-side too — clearing localStorage alone left the token valid
+  // forever for anyone who had captured it. Fire-and-forget: the local sign-out must happen
+  // even if the request fails.
+  const logout = () => {
+    api('/auth/logout', { method: 'POST' }).catch(() => {})
+    localStorage.removeItem('rbx_token'); setUser(null); go('home'); toast.success('Signed out')
+  }
   const unread = notifications.filter(n => !n.read).length
 
   return (
