@@ -51,6 +51,12 @@ const run = async () => {
       ADMIN_DASHBOARD_SECRET: 'test-dashboard-secret',
       TOTP_ENCRYPTION_KEY: '0'.repeat(64),
       BLOCKBEE_API_KEY: '',
+      // Same reasoning as BLOCKBEE_API_KEY above: without this the suite inherits the real
+      // .env credentials and every synthetic `@test.local` signup becomes a real, hard-
+      // bouncing send against the production sending domain. lib/email.js also refuses to
+      // dispatch under TEST_MODE; this is the belt to that braces.
+      RESEND_API_KEY: '',
+      EMAIL_FROM: '',
       // Lets the backtest suite read back a just-issued verification code over HTTP
       // instead of touching Mongo directly — see the TEST_MODE guard in
       // app/api/[[...path]]/route.js. Never set this outside the test harness.

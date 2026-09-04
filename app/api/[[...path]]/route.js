@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 import QRCode from 'qrcode'
 import dns from 'dns'
-import { sendEmail, verificationEmailTemplate } from '@/lib/email'
+import { sendEmail, verificationEmailTemplate, emailConfigured, emailConfigProblems } from '@/lib/email'
 
 // Some networks only advertise an IPv6 link-local DNS server, which Node's resolver
 // can't query (ECONNREFUSED on SRV lookups for the mongodb+srv:// connection string).
@@ -252,11 +252,24 @@ async function createCaptchaChallenge(db) {
   return { captchaId: id, svg: genCaptchaSvg(question) }
 }
 // Single-use: correct or not, the challenge is consumed so it can't be replayed.
+//
+// The consume is a single atomic findOneAndUpdate filtered on `used: false`, NOT a
+// findOne-then-updateOne. Read-then-write left a window in which N concurrent requests
+// bearing the same captchaId all observed `used: false` and all passed — so one solved
+// CAPTCHA could be fanned out across an unlimited number of parallel signups, which is
+// precisely the abuse this control exists to stop. Mongo guarantees only one writer
+// matches `{ id, used: false }`, so exactly one caller can ever win the challenge.
 async function verifyCaptcha(db, captchaId, answer) {
   if (!captchaId || answer == null || answer === '') return false
-  const c = await db.collection('captchaChallenges').findOne({ id: String(captchaId) })
-  if (!c || c.used || c.expiresAt < new Date()) return false
-  await db.collection('captchaChallenges').updateOne({ id: c.id }, { $set: { used: true } })
+  const r = await db.collection('captchaChallenges').findOneAndUpdate(
+    { id: String(captchaId), used: false },
+    { $set: { used: true } },
+    { returnDocument: 'before' }
+  )
+  const c = (r && r.value) ? r.value : r
+  // No document matched: unknown id, or another request already consumed it.
+  if (!c || typeof c.answer !== 'number') return false
+  if (c.expiresAt < new Date()) return false
   return Number(answer) === c.answer
 }
 
@@ -293,6 +306,22 @@ function normalizeAbsoluteUrl(value, label) {
     console.error(`[config] ${label} is set to "${trimmed}", which is not an absolute http(s) URL (missing "https://"?). Ignoring it and falling through to the next option instead — fix it to something like "https://yourdomain.com".`)
     return null
   }
+}
+// Admin-supplied import URLs are fetched by the SERVER, so they are an SSRF sink: whatever
+// they point at is requested from inside the deployment's network, with its egress identity.
+// These used to be validated with a bare substring regex (/ebay\.com\/fdbk\/feedback_profile\//),
+// which only asks whether that text appears ANYWHERE in the string — so
+// "http://169.254.169.254/latest/meta-data/?x=ebay.com/fdbk/feedback_profile/" passed and the
+// cloud metadata endpoint got fetched. Parsing the URL and checking the actual hostname (exact
+// match or a true subdomain, never a substring) is the only form of this check that means what
+// it says. Admin-only is a mitigation, not a fix: it makes a stolen admin session strictly more
+// valuable than it needs to be.
+function isUrlOnHost(value, domain) {
+  let parsed
+  try { parsed = new URL(String(value || '')) } catch { return false }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  return host === domain || host.endsWith(`.${domain}`)
 }
 // The ONE place every stable, request-independent link gets its origin from: email
 // CTAs/images, the BlockBee payment webhook's notify/redirect URLs, and Discord's
@@ -860,6 +889,22 @@ async function claimDeliverable(db, orderNumber, discordUserId, discordUsername)
 // ---------------- TOTP (RFC 6238) — Google Authenticator / any standard authenticator app ----------------
 const B32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 // ---------------- Password hashing (scrypt, Node's built-in — no extra dependency) ----------------
+// Constant-time comparison for shared secrets/nonces that arrive from a caller. `!==` on
+// strings short-circuits at the first differing byte, which leaks a prefix-match oracle;
+// these values are all bearer-style secrets, so they get the same treatment as a password
+// hash. Lengths are compared first (and the buffers padded to equal length) because
+// timingSafeEqual itself throws on a length mismatch.
+function timingSafeEqualStr(a, b) {
+  const ab = Buffer.from(String(a ?? ''), 'utf8')
+  const bb = Buffer.from(String(b ?? ''), 'utf8')
+  if (ab.length !== bb.length) {
+    // Still do the comparison so the early return isn't itself the timing signal.
+    crypto.timingSafeEqual(ab, ab)
+    return false
+  }
+  return crypto.timingSafeEqual(ab, bb)
+}
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex')
   const hash = crypto.scryptSync(password, salt, 64).toString('hex')
@@ -1423,7 +1468,7 @@ async function handleRoute(request, { params }) {
     // Called by the Discord bot with a shared secret; delivers the assigned toy code or account login.
     if (route === '/discord/claim' && method === 'POST') {
       const secret = request.headers.get('x-bot-secret')
-      if (!process.env.BOT_SHARED_SECRET || secret !== process.env.BOT_SHARED_SECRET) return json({ error: 'Unauthorized' }, 401)
+      if (!process.env.BOT_SHARED_SECRET || !timingSafeEqualStr(secret, process.env.BOT_SHARED_SECRET)) return json({ error: 'Unauthorized' }, 401)
       const b = await request.json().catch(() => ({}))
       if (!b.orderNumber) return json({ error: 'orderNumber required' }, 400)
       const d = await claimDeliverable(db, b.orderNumber, b.discordUserId, b.discordUsername)
@@ -1550,7 +1595,21 @@ async function handleRoute(request, { params }) {
       // dead-ended them on "Username is already taken" with no way left to get a fresh code
       // (the verify step is gone once the dialog closes). Matching on their email first sends
       // them a new code instead, which is what they were actually trying to do.
-      const GENERIC_OK = { message: 'If this email can be registered, a verification code has been sent.' }
+      // `emailDelivery` is deliberately derived from emailConfigured() — global deployment
+      // state — and NEVER from whether this particular send succeeded. That keeps it
+      // identical for every address (no account-existence leak) while still telling the
+      // caller the one thing that was previously invisible: that no code is coming.
+      //
+      // The silent version of this is what "Resend just won't send emails" actually looked
+      // like from the outside. Signup answered 200 "check your email", the account was
+      // created unverified, the code box appeared — and with RESEND_API_KEY/EMAIL_FROM
+      // absent from the deployment's environment, sendEmail() returned not_configured
+      // without ever calling the provider. The only trace was one console.error in the
+      // platform logs. Now the client can say so.
+      const GENERIC_OK = {
+        message: 'If this email can be registered, a verification code has been sent.',
+        emailDelivery: emailConfigured() ? 'ok' : 'unavailable',
+      }
       const existingEmail = await db.collection('users').findOne({ email })
       if (existingEmail) {
         // Only ever re-send to the account that already owns this email, and never touch
@@ -1651,7 +1710,10 @@ async function handleRoute(request, { params }) {
       // distinguishable 429 with Retry-After, because that's the account owner's own
       // resend click needing real feedback ("wait 40s"), not an attacker fishing for valid
       // addresses; login's existing lockout message makes the same trade-off.
-      const GENERIC = { message: 'If a pending verification exists for this email, a new code has been sent.' }
+      const GENERIC = {
+        message: 'If a pending verification exists for this email, a new code has been sent.',
+        emailDelivery: emailConfigured() ? 'ok' : 'unavailable',
+      }
       if (!EMAIL_RE.test(email)) return json(GENERIC)
 
       const user = await db.collection('users').findOne({ email })
@@ -1705,6 +1767,28 @@ async function handleRoute(request, { params }) {
         }
       }
       await clearLoginAttempts(db, email)
+      // SECURITY: an unverified account must NOT receive a session here. This used to mint
+      // a real 30-day token and merely trust the browser to throw it away (app/page.js
+      // routes such a response into the code-entry step instead of storing the token) —
+      // but a token handed to a client is issued, full stop. Any non-browser caller simply
+      // kept it, and every route that only checks `getUser()` (reviews, listings, chat,
+      // wishlist, reports, profile) accepted it; only the two purchase routes re-check
+      // emailVerified. That made the whole verification system — the app's stated
+      // anti-mass-registration defense — bypassable with one curl.
+      //
+      // Returning the user WITHOUT a token keeps app/page.js working unchanged (it reads
+      // d.user.emailVerified before ever touching d.token) while making the bypass
+      // impossible. Safe to confirm the account exists at this point: the caller already
+      // proved the password, so there is nothing left to enumerate.
+      //
+      // Kept a 200 deliberately: app/page.js's api() helper throws on any non-2xx, so a 403
+      // here would surface as a red toast instead of routing the user into the code-entry
+      // step — the same dead end this flow exists to avoid. The response is unchanged from
+      // what the client already handles; only `token` is gone.
+      if (!user.emailVerified) {
+        await logSecurityEvent(db, 'login_blocked_unverified', { userId: user.id })
+        return json({ requiresVerification: true, user: clean(user) })
+      }
       return json({ token: await createSession(db, user.id), user: clean(user) })
     }
     // Server-side revocation: signing out must actually kill the token, not just forget it
@@ -1868,8 +1952,15 @@ async function handleRoute(request, { params }) {
       if (!oid) return new Response('*ok*', { status: 200 })
       const order = await db.collection('orders').findOne({ orderId: oid })
       if (!order) return new Response('*ok*', { status: 200 })
-      // Bind: nonce must match the one we generated for this order
-      if (order.nonce && nonce && String(nonce) !== String(order.nonce)) {
+      // Bind: nonce must match the one we generated for this order.
+      // This used to be skipped entirely when the caller simply OMITTED the nonce param
+      // (`order.nonce && nonce && ...`), so the binding was opt-out by the very party it
+      // constrains. An order carrying a nonce now REQUIRES a matching one — anything else
+      // is rejected before the (unauthenticated, outbound, billable) BlockBee reconcile
+      // below, which otherwise let anyone who learned an orderId drive provider API calls
+      // at will. Compared with timingSafeEqualStr since the nonce is a bearer-style secret.
+      if (order.nonce && !timingSafeEqualStr(String(nonce || ''), String(order.nonce))) {
+        await logSecurityEvent(db, 'payment_callback_bad_nonce', { orderId: oid })
         return new Response('Invalid nonce', { status: 401 })
       }
       // Authoritative confirmation: re-fetch payment state from BlockBee using our API key
@@ -2034,7 +2125,7 @@ async function handleRoute(request, { params }) {
         const b = await request.json()
         const slug = (b.slug || '').toString()
         const code = (b.code || '').toString().trim()
-        if (!process.env.ADMIN_DASHBOARD_SECRET || slug !== process.env.ADMIN_DASHBOARD_SECRET) return json({ error: 'Invalid dashboard link' }, 403)
+        if (!process.env.ADMIN_DASHBOARD_SECRET || !timingSafeEqualStr(slug, process.env.ADMIN_DASHBOARD_SECRET)) return json({ error: 'Invalid dashboard link' }, 403)
         if (user.totpEnabled) {
           if (!verifyTotpEncrypted(user.totpSecret, code)) return json({ error: 'Invalid authenticator code' }, 403)
           return json({ ok: true })
@@ -2161,6 +2252,9 @@ async function handleRoute(request, { params }) {
           discordBotTokenSet: !!cfg.discordBotToken, discordBotTokenMasked: mask(cfg.discordBotToken),
           discordClientId: cfg.discordClientId || '', discordGuildId: cfg.discordGuildId || '', discordChannelId: cfg.discordChannelId || '',
           discordPublicKeySet: !!process.env.DISCORD_PUBLIC_KEY, botSharedSecretSet: !!process.env.BOT_SHARED_SECRET,
+          // Names the exact missing var(s) so "verification emails aren't arriving" is a
+          // dashboard read rather than a log dig on the hosting platform.
+          emailConfigured: emailConfigured(), emailMissingVars: emailConfigProblems(),
           robloxEnabled: !!cfg.robloxEnabled, botOnline: !!cfg.botOnline, robloxBot: 'voIIium', dashboardSecretSet: !!process.env.ADMIN_DASHBOARD_SECRET
         } })
       }
@@ -2564,7 +2658,11 @@ async function handleRoute(request, { params }) {
         const ebayRl = await rateLimit(db, `ebayimport:${user.id}`, { max: 20, windowMs: 60 * 60 * 1000 })
         if (!ebayRl.allowed) return tooMany(ebayRl.retryAfterSec)
         const b = await request.json()
-        if (!b.url || !/ebay\.com\/fdbk\/feedback_profile\//i.test(b.url)) return json({ error: 'Enter a valid eBay feedback profile URL (ebay.com/fdbk/feedback_profile/USERNAME)' }, 400)
+        // Host is checked structurally (see isUrlOnHost) BEFORE the path shape, so the
+        // path pattern can never be what makes an off-host URL acceptable.
+        if (!b.url || !isUrlOnHost(b.url, 'ebay.com') || !/\/fdbk\/feedback_profile\//i.test(new URL(b.url).pathname)) {
+          return json({ error: 'Enter a valid eBay feedback profile URL (ebay.com/fdbk/feedback_profile/USERNAME)' }, 400)
+        }
         let parsed
         try { parsed = await fetchEbayFeedback(b.url) } catch (e) { return json({ error: e.message || 'Could not read eBay feedback' }, 502) }
         let imported = 0, skipped = 0
@@ -2589,7 +2687,9 @@ async function handleRoute(request, { params }) {
         const eldoRl = await rateLimit(db, `eldoradoimport:${user.id}`, { max: 20, windowMs: 60 * 60 * 1000 })
         if (!eldoRl.allowed) return tooMany(eldoRl.retryAfterSec)
         const b = await request.json()
-        if (!b.url || !/eldorado\.gg\/users\//i.test(b.url)) return json({ error: 'Enter a valid Eldorado profile URL (eldorado.gg/users/USERNAME/reviews)' }, 400)
+        if (!b.url || !isUrlOnHost(b.url, 'eldorado.gg') || !/^\/users\//i.test(new URL(b.url).pathname)) {
+          return json({ error: 'Enter a valid Eldorado profile URL (eldorado.gg/users/USERNAME/reviews)' }, 400)
+        }
         let parsed
         try { parsed = await fetchEldoradoFeedback(b.url) } catch (e) { return json({ error: e.message || 'Could not read Eldorado reviews' }, 502) }
         let imported = 0, skipped = 0

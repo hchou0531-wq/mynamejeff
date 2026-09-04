@@ -271,20 +271,38 @@ const run = async () => {
     expect(/pending verification/i.test(r.data.message || ''), `expected the generic message, got "${JSON.stringify(r.data)}"`)
   }))
 
-  await test('unverified accounts can log in but are blocked from purchasing', needDb(async () => {
+  // This used to assert the OPPOSITE ("unverified accounts can log in"), which is how the
+  // bypass survived: login minted a real session for an unverified account and the test
+  // pinned that in place. The browser dropped the token, but nothing else had to. Only the
+  // two purchase routes re-checked emailVerified, so that token was accepted everywhere
+  // else. The invariant worth testing is that no token is issued at all.
+  await test('login issues NO session token for an unverified account', needDb(async () => {
     const ip = freshIp()
     const s = await solveCaptcha(ip)
     const email = `ev${rand()}@test.local`
     await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
     const s2 = await solveCaptcha(ip)
     const login = await req('/auth/login', { ip, method: 'POST', body: { email, password: 'TestPass123!', ...s2 } })
-    eq(login.status, 200, 'unverified accounts should still be able to log in')
+    eq(login.status, 200, 'the client routes this into the code-entry step, so it must stay 2xx')
     eq(login.data.user.emailVerified, false, 'account should not be verified yet')
+    expect(login.data.requiresVerification === true, 'missing requiresVerification flag')
+    expect(!login.data.token, `a session token was issued to an UNVERIFIED account: ${login.data.token}`)
+    // Belt and braces: whatever the response carried, it must not authenticate anything.
+    const me = await req('/me', { ip, token: login.data.token })
+    eq(me.status, 401, 'an unverified login response must not authenticate /me')
+  }))
+
+  await test('an unverified account is blocked from purchasing', needDb(async () => {
     const list = await req('/listings')
     if (!list.data.listings || !list.data.listings.length) return 'skip'
-    const r = await req('/orders', { ip, method: 'POST', body: { listingId: list.data.listings[0].id }, token: login.data.token })
-    eq(r.status, 403, 'an unverified account should not be able to purchase')
-    expect(r.data.requiresVerification === true, 'missing requiresVerification flag on the 403')
+    const ip = freshIp()
+    const s = await solveCaptcha(ip)
+    const email = `ev${rand()}@test.local`
+    await req('/auth/signup', { ip, method: 'POST', body: { username: 'ev' + rand(), email, password: 'TestPass123!', ...s } })
+    // No token is obtainable without verifying, which is itself the strongest form of this
+    // guarantee — assert the route's own check too, in case a token ever leaks another way.
+    const r = await req('/orders', { ip, method: 'POST', body: { listingId: list.data.listings[0].id } })
+    expect([401, 403].includes(r.status), `an unverified/anonymous caller should not be able to purchase, got ${r.status}`)
   }))
 
   await test('login works and never leaks secrets', needDb(async () => {

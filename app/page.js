@@ -14,10 +14,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Sheet, SheetContent, SheetTitle, SheetClose } from '@/components/ui/sheet'
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
   Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
-  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket, X, Send, RefreshCw, Menu
+  AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket, X, Send, RefreshCw, Menu, Copy, Eye, EyeOff
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
 
@@ -30,6 +31,20 @@ const CAT_ICONS = { Limiteds: Gem, Accessories: Sparkles, UGC: Package, Collecti
 const CONDITIONS = ['All', 'Mint', 'Rare', 'New', 'Used']
 const rbx = (u) => Math.round(u * ROBUX_RATE).toLocaleString()
 const usd = (n) => `$${Number(n).toFixed(2)}`
+function timeAgo(d) {
+  if (!d) return '—'
+  const t = new Date(d).getTime()
+  if (Number.isNaN(t)) return '—'
+  const diff = Date.now() - t
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day < 30) return `${day}d ago`
+  return new Date(d).toLocaleDateString()
+}
 async function copyText(t, label = 'Copied') {
   try { await navigator.clipboard.writeText(t); toast.success(label) }
   catch {
@@ -736,10 +751,15 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
   const [verifyEmail, setVerifyEmail] = useState('')
   const [verifyCode, setVerifyCode] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
+  // True when the SERVER reports it has no email provider configured — a deployment
+  // problem, not a user error. Drives the banner in the verify step so nobody waits on an
+  // email that was never dispatched.
+  const [emailUnavailable, setEmailUnavailable] = useState(false)
 
   const reset = () => {
     setNeedsTotp(false); setTotpCode('')
     setNeedsVerification(false); setVerifyEmail(''); setVerifyCode(''); setResendCooldown(0)
+    setEmailUnavailable(false)
     setForm({ username: '', email: '', password: '' })
   }
 
@@ -766,6 +786,11 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
         setVerifyEmail(form.email.trim().toLowerCase())
         setNeedsVerification(true)
         setResendCooldown(RESEND_COOLDOWN_SECONDS)
+        // Server-side email isn't configured on this deployment, so no code is coming and
+        // the box below would never accept anything. Say so instead of letting the user
+        // wait on an email that was never dispatched. This is deployment-wide state, not
+        // anything about this address, so it leaks nothing.
+        setEmailUnavailable(d.emailDelivery === 'unavailable')
         setLoading(false)
         return
       }
@@ -806,8 +831,13 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
     if (resendCooldown > 0) return
     setResendCooldown(RESEND_COOLDOWN_SECONDS)
     try {
-      await api('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: verifyEmail }) })
-      toast.success('New code sent — check your email.')
+      const d = await api('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: verifyEmail }) })
+      if (d.emailDelivery === 'unavailable') {
+        setEmailUnavailable(true)
+        toast.error('Email delivery is not configured on the server — no code was sent.')
+      } else {
+        toast.success('New code sent — check your email.')
+      }
     } catch (e) {
       toast.error(e.message)
     }
@@ -818,7 +848,15 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
       <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset() }}>
         <DialogContent className="bg-[#12101f] border-white/10 text-slate-100">
           <DialogHeader><DialogTitle className="text-2xl font-black flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-emerald-400" /> Verify your email</DialogTitle>
-            <DialogDescription className="text-slate-400">We sent a 6-digit code to <span className="text-slate-200">{verifyEmail}</span>. Enter it below — it expires in 10 minutes.</DialogDescription></DialogHeader>
+            <DialogDescription className="text-slate-400">{emailUnavailable
+              ? <>We could not send a code to <span className="text-slate-200">{verifyEmail}</span>.</>
+              : <>We sent a 6-digit code to <span className="text-slate-200">{verifyEmail}</span>. Enter it below — it expires in 10 minutes.</>}</DialogDescription></DialogHeader>
+          {emailUnavailable && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+              <p className="font-semibold">Email delivery isn&apos;t configured on this server.</p>
+              <p className="mt-1 text-amber-200/80">No verification code was sent, so there is nothing to enter yet. This is a server configuration problem, not something you did — please contact support.</p>
+            </div>
+          )}
           <div>
             <Label className="text-slate-300">Verification code</Label>
             <Input
@@ -2528,14 +2566,167 @@ function ProfileInventoryTabs({ limiteds, items, gamepasses }) {
   )
 }
 
+// ---- small shared bits for the admin account (imported profile) page ----
+function ImgOrIcon({ src, alt = '', icon: Icon = Package, className = '' }) {
+  const [err, setErr] = useState(false)
+  return (
+    <div className={`relative overflow-hidden flex items-center justify-center ${className}`} style={{ background: 'rgba(255,255,255,0.03)' }}>
+      {(!src || err) && <Icon className="w-1/3 h-1/3 opacity-25" style={{ color: 'var(--eth-muted)' }} />}
+      {src && !err && <img src={src} alt={alt} loading="lazy" decoding="async" onError={() => setErr(true)} className="absolute inset-0 w-full h-full object-cover" />}
+    </div>
+  )
+}
+function InventoryEmpty({ text, icon: Icon = Package }) {
+  return <div className="py-14 text-center"><Icon className="w-9 h-9 mx-auto mb-3 opacity-25" style={{ color: 'var(--eth-muted)' }} /><p className="text-sm max-w-xs mx-auto" style={{ color: 'var(--eth-muted)' }}>{text}</p></div>
+}
+function LimitedCard({ item }) {
+  const isU = !!item.serialNumber
+  return (
+    <Card className="overflow-hidden group transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ background: 'rgba(0,0,0,0.2)', borderColor: 'var(--eth-gold-dim)' }}>
+      <div className="relative aspect-square">
+        <ImgOrIcon src={item.imageUrl} icon={Gem} className="w-full h-full transition-transform duration-300 group-hover:scale-[1.04]" />
+        <span className={`absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold tracking-wide uppercase backdrop-blur-sm border ${isU ? 'bg-fuchsia-500/25 text-fuchsia-200 border-fuchsia-400/30' : 'bg-black/50 text-slate-200 border-white/10'}`}>{isU ? 'Limited U' : 'Limited'}</span>
+        {item.serialNumber && <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-black/50 backdrop-blur-sm border border-white/10" style={{ color: 'var(--eth-gold)' }}>#{item.serialNumber}</span>}
+      </div>
+      <div className="p-2.5">
+        <p className="text-[13px] font-semibold truncate" style={{ color: 'var(--eth-ink)' }} title={item.name}>{item.name}</p>
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--eth-muted)' }}>RAP</span>
+          <span className="text-sm font-bold" style={{ color: 'var(--eth-teal)' }}>{item.rap != null ? Number(item.rap).toLocaleString() : '—'}</span>
+        </div>
+      </div>
+    </Card>
+  )
+}
+function ItemThumbCard({ item }) {
+  return (
+    <Card className="overflow-hidden transition-transform hover:-translate-y-0.5" style={{ background: 'rgba(0,0,0,0.2)', borderColor: 'var(--eth-gold-dim)' }}>
+      <div className="aspect-square"><ImgOrIcon src={item.imageUrl} icon={Package} className="w-full h-full" /></div>
+      <div className="p-2"><p className="text-[11px] font-semibold truncate" style={{ color: 'var(--eth-ink)' }} title={item.name}>{item.name}</p><p className="text-[10px] truncate" style={{ color: 'var(--eth-muted)' }}>{item.category}</p></div>
+    </Card>
+  )
+}
+function GamePassCard({ pass }) {
+  return (
+    <Card className="p-3 flex items-center gap-3 transition-colors hover:border-[var(--eth-gold)]/50" style={{ background: 'rgba(0,0,0,0.2)', borderColor: 'var(--eth-gold-dim)' }}>
+      <ImgOrIcon src={pass.imageUrl} icon={Gamepad2} className="w-12 h-12 rounded-lg shrink-0" />
+      <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate" style={{ color: 'var(--eth-ink)' }}>{pass.name}</p><p className="text-xs truncate" style={{ color: 'var(--eth-muted)' }}>{pass.universe}</p></div>
+      <span className="text-sm font-bold shrink-0" style={{ color: 'var(--eth-teal)' }}>{pass.price != null ? `${pass.price} R$` : 'Free'}</span>
+    </Card>
+  )
+}
+
+// Search / filter / sort browser over an imported account's inventory snapshot.
+// Read-only (nothing here is individually listed or priced — the account itself is the
+// sellable unit; this view exists to help an admin judge the account's value at a glance).
+function AccountInventoryBrowser({ limiteds, items, gamepasses }) {
+  const [tab, setTab] = useState('limiteds')
+  const [search, setSearch] = useState('')
+  const [limFilter, setLimFilter] = useState('all')
+  const [itemCat, setItemCat] = useState('All')
+  const [sort, setSort] = useState('rap_desc')
+
+  const itemCats = ['All', ...Array.from(new Set(items.map(i => i.category).filter(Boolean))).sort()]
+  const q = search.trim().toLowerCase()
+  const matches = (name, assetId) => !q || (name || '').toLowerCase().includes(q) || String(assetId ?? '').includes(q)
+
+  const filteredLimiteds = limiteds
+    .filter(it => matches(it.name, it.assetId))
+    .filter(it => limFilter === 'all' || (limFilter === 'limitedu' ? !!it.serialNumber : !it.serialNumber))
+    .sort((a, b) => sort === 'rap_asc' ? (a.rap || 0) - (b.rap || 0) : sort === 'name_asc' ? String(a.name).localeCompare(String(b.name)) : (b.rap || 0) - (a.rap || 0))
+  const filteredItems = items
+    .filter(it => matches(it.name, it.assetId))
+    .filter(it => itemCat === 'All' || it.category === itemCat)
+    .sort((a, b) => sort === 'name_asc' ? String(a.name).localeCompare(String(b.name)) : String(a.category || '').localeCompare(String(b.category || '')) || String(a.name).localeCompare(String(b.name)))
+  const filteredPasses = gamepasses
+    .filter(p => matches(p.name, p.id))
+    .sort((a, b) => sort === 'rap_asc' ? (a.price || 0) - (b.price || 0) : sort === 'name_asc' ? String(a.name).localeCompare(String(b.name)) : (b.price || 0) - (a.price || 0))
+
+  const sortOptions = tab === 'gamepasses'
+    ? [['rap_desc', 'Price: High to Low'], ['rap_asc', 'Price: Low to High'], ['name_asc', 'Name (A–Z)']]
+    : tab === 'items'
+    ? [['name_asc', 'Name (A–Z)'], ['rap_desc', 'Category']]
+    : [['rap_desc', 'RAP: High to Low'], ['rap_asc', 'RAP: Low to High'], ['name_asc', 'Name (A–Z)']]
+
+  return (
+    <Card className="p-4 sm:p-5" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+      <Tabs value={tab} onValueChange={setTab}>
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-4">
+          <TabsList className="bg-black/30 border shrink-0 h-auto flex-wrap justify-start" style={{ borderColor: 'var(--eth-gold-dim)' }}>
+            <TabsTrigger value="limiteds"><Gem className="w-3.5 h-3.5 mr-1.5" /> Limiteds ({limiteds.length})</TabsTrigger>
+            <TabsTrigger value="items"><Package className="w-3.5 h-3.5 mr-1.5" /> Items ({items.length})</TabsTrigger>
+            <TabsTrigger value="gamepasses"><Gamepad2 className="w-3.5 h-3.5 mr-1.5" /> Game Passes ({gamepasses.length})</TabsTrigger>
+          </TabsList>
+          <div className="flex flex-wrap gap-2 flex-1 min-w-0">
+            <div className="relative flex-1 min-w-[140px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--eth-muted)' }} />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or asset ID..." className="pl-9 h-9 bg-black/30 border-white/10 text-sm" />
+            </div>
+            <Select value={sort} onValueChange={setSort}>
+              <SelectTrigger className="w-[168px] h-9 bg-black/30 border-white/10 text-sm shrink-0"><SelectValue /></SelectTrigger>
+              <SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{sortOptions.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <TabsContent value="limiteds" className="mt-0">
+          <div className="flex gap-1.5 mb-4">
+            {[['all', 'All'], ['limited', 'Limited'], ['limitedu', 'Limited U']].map(([v, l]) => (
+              <button key={v} onClick={() => setLimFilter(v)} className="px-3 py-1 rounded-full text-xs font-semibold transition-colors border"
+                style={limFilter === v ? { background: 'rgba(192,132,252,0.15)', color: 'var(--eth-teal)', borderColor: 'rgba(192,132,252,0.35)' } : { color: 'var(--eth-muted)', borderColor: 'rgba(255,255,255,0.08)' }}>{l}</button>
+            ))}
+          </div>
+          {limiteds.length === 0 ? <InventoryEmpty icon={Gem} text="No public limiteds found. Inventory may have been private at import time." />
+            : filteredLimiteds.length === 0 ? <InventoryEmpty text="No limiteds match your search or filter." />
+            : <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3.5">{filteredLimiteds.map(it => <LimitedCard key={it.assetId} item={it} />)}</div>}
+        </TabsContent>
+
+        <TabsContent value="items" className="mt-0">
+          {itemCats.length > 2 && (
+            <div className="mb-4">
+              <Select value={itemCat} onValueChange={setItemCat}>
+                <SelectTrigger className="w-[180px] h-9 bg-black/30 border-white/10 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-[#12101f] border-white/10 text-slate-100">{itemCats.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          )}
+          {items.length === 0 ? <InventoryEmpty text="No public regular items found. Inventory may have been private at import time." />
+            : filteredItems.length === 0 ? <InventoryEmpty text="No items match your search or filter." />
+            : <div className="grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-6 gap-3">{filteredItems.map(it => <ItemThumbCard key={it.assetId} item={it} />)}</div>}
+        </TabsContent>
+
+        <TabsContent value="gamepasses" className="mt-0">
+          {gamepasses.length === 0 ? <InventoryEmpty icon={Gamepad2} text="No public game passes found." />
+            : filteredPasses.length === 0 ? <InventoryEmpty text="No game passes match your search." />
+            : <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{filteredPasses.map(p => <GamePassCard key={p.id} pass={p} />)}</div>}
+        </TabsContent>
+      </Tabs>
+    </Card>
+  )
+}
+
+const ACCOUNT_STATUS_META = {
+  draft: { label: 'Draft', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
+  available: { label: 'Listed for sale', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
+  sold: { label: 'Sold', cls: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
+  claimed: { label: 'Claimed', cls: 'bg-slate-500/15 text-slate-300 border-slate-500/30' },
+  removed: { label: 'Removed', cls: 'bg-red-500/15 text-red-300 border-red-500/30' },
+}
+
 function AdminAccountView({ api, go, id, user }) {
   const [account, setAccount] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState(null)
+  const [rapHist, setRapHist] = useState(null)
+  const [credOpen, setCredOpen] = useState(true)
+  const [showPassword, setShowPassword] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [errors, setErrors] = useState({})
 
   const load = useCallback(async () => {
-    setLoading(true)
+    setLoading(true); setLoadError(null)
     try {
       const d = await api(`/admin/dashboard/accounts/${id}`)
       setAccount(d.account)
@@ -2546,11 +2737,25 @@ function AdminAccountView({ api, go, id, user }) {
           email: d.account.credentials?.email || '', notes: d.account.credentials?.notes || '',
         },
       })
-    } catch (e) { toast.error(e.message) } finally { setLoading(false) }
+      if (d.account.robloxUserId) {
+        api(`/profile/${d.account.robloxUserId}/rap-history`).then(setRapHist).catch(() => setRapHist({ totalRap: 0, history: [] }))
+      }
+    } catch (e) { setLoadError(e.message || 'Something went wrong loading this account.') } finally { setLoading(false) }
   }, [api, id])
   useEffect(() => { load() }, [load])
+  useEffect(() => { if (account) setCredOpen(account.status !== 'available') }, [account?.status])
+
+  const setCreds = (k, v) => { setForm(f => ({ ...f, credentials: { ...f.credentials, [k]: v } })); setErrors(er => ({ ...er, [k]: undefined })) }
 
   const save = async (extra = {}) => {
+    if (extra.status === 'available') {
+      const errs = {}
+      if (!form.title.trim()) errs.title = 'Title is required'
+      if (!form.credentials.username.trim()) errs.username = 'Username is required'
+      if (!form.credentials.password.trim()) errs.password = 'Password is required'
+      setErrors(errs)
+      if (Object.keys(errs).length) { toast.error('Fill in the required fields before listing'); setCredOpen(true); return }
+    }
     setSaving(true)
     try {
       const d = await api(`/admin/dashboard/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ ...form, price: Number(form.price) || 0, ...extra }) })
@@ -2560,8 +2765,8 @@ function AdminAccountView({ api, go, id, user }) {
   }
 
   const remove = async () => {
-    if (!window.confirm('Delete this imported account permanently? This cannot be undone.')) return
-    try { await api(`/admin/dashboard/accounts/${id}`, { method: 'DELETE' }); toast.success('Deleted'); go('admin', { tab: 'profiles' }) } catch (e) { toast.error(e.message) }
+    try { await api(`/admin/dashboard/accounts/${id}`, { method: 'DELETE' }); toast.success('Account deleted'); go('admin', { tab: 'profiles' }) }
+    catch (e) { toast.error(e.message) }
   }
 
   if (!user || !user.isAdmin) {
@@ -2572,86 +2777,221 @@ function AdminAccountView({ api, go, id, user }) {
       </div>
     )
   }
-  if (loading || !account || !form) return <div className="container mx-auto px-4 py-24 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-[#c084fc]" /></div>
+
+  const Back = () => (
+    <button onClick={() => go('admin', { tab: 'profiles' })} className="flex items-center gap-1 text-sm mb-6 transition-colors" style={{ color: 'var(--eth-muted)' }} onMouseEnter={e => e.currentTarget.style.color = 'var(--eth-ink)'} onMouseLeave={e => e.currentTarget.style.color = 'var(--eth-muted)'}><ChevronLeft className="w-4 h-4" /> Back to Imported Accounts</button>
+  )
+  const skeletonBox = "rounded-xl animate-pulse"
+  const skeletonStyle = { background: 'var(--eth-night1)', border: '1px solid var(--eth-gold-dim)' }
+
+  if (loading) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-6xl">
+        <Back />
+        <div className={`${skeletonBox} p-6 mb-5`} style={skeletonStyle}>
+          <div className="flex gap-5 items-center"><div className="w-20 h-20 rounded-2xl bg-white/5 shrink-0" /><div className="flex-1 space-y-3 py-1"><div className="h-5 w-48 rounded bg-white/5" /><div className="h-3 w-56 rounded bg-white/5" /></div></div>
+        </div>
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-3 mb-6">{Array.from({ length: 5 }).map((_, i) => <div key={i} className={`${skeletonBox} h-16 sm:flex-1 sm:min-w-[100px]`} style={skeletonStyle} />)}</div>
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4">{Array.from({ length: 6 }).map((_, i) => <div key={i} className={`${skeletonBox} aspect-square`} style={skeletonStyle} />)}</div>
+          <div className={`${skeletonBox} h-96`} style={skeletonStyle} />
+        </div>
+      </div>
+    )
+  }
+
+  if (loadError || !account || !form) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-6xl">
+        <Back />
+        <div className="rounded-2xl py-20 text-center" style={{ background: 'var(--eth-night1)', border: '1px solid var(--eth-gold-dim)' }}>
+          <AlertTriangle className="w-10 h-10 mx-auto mb-3 text-red-400/70" />
+          <p className="font-semibold mb-1" style={{ color: 'var(--eth-ink)' }}>Couldn't load this account</p>
+          <p className="text-sm mb-5" style={{ color: 'var(--eth-muted)' }}>{loadError || 'Something went wrong.'}</p>
+          <Button onClick={load} variant="outline" className="border-white/10"><RefreshCw className="w-4 h-4 mr-1.5" /> Try again</Button>
+        </div>
+      </div>
+    )
+  }
 
   const profile = account.snapshot?.profile
   const limiteds = account.snapshot?.limiteds || []
   const items = account.snapshot?.items || []
   const gamepasses = account.snapshot?.gamepasses?.passes || []
   const totalRap = limiteds.reduce((s, it) => s + (Number(it.rap) || 0), 0)
-  const listed = account.status === 'available'
+  const hist = rapHist?.history || []
+  const first = hist.length ? hist[0].rap : null
+  const last = hist.length ? hist[hist.length - 1].rap : null
+  const trend = (first != null && last != null && first > 0) ? ((last - first) / first) * 100 : null
+  const status = account.status || 'draft'
+  const sMeta = ACCOUNT_STATUS_META[status] || ACCOUNT_STATUS_META.draft
+  const listed = status === 'available'
+  const canEdit = status === 'draft' || status === 'available'
+  const monthLabel = (m) => { const [y, mo] = m.split('-'); return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) }
 
-  const StatChip = ({ label, value, color }) => (
-    <div className="flex-1 min-w-[110px] px-4 py-3 rounded-lg" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-      <p className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--eth-muted)' }}>{label}</p>
-      <p className="text-lg font-bold mt-0.5" style={{ color: color || 'var(--eth-ink)' }}>{value}</p>
+  const StatChip = ({ icon: Icon, label, value, color }) => (
+    <div className="flex-1 min-w-[110px] px-3.5 py-2.5 rounded-xl flex items-center gap-2.5" style={{ background: 'rgba(107,33,168,0.10)', border: '1px solid rgba(107,33,168,0.25)' }}>
+      {Icon && <Icon className="w-4 h-4 shrink-0" style={{ color: color || 'var(--eth-muted)' }} />}
+      <div className="min-w-0">
+        <p className="text-[10px] font-semibold tracking-wide uppercase truncate" style={{ color: 'var(--eth-muted)' }}>{label}</p>
+        <p className="text-base font-bold leading-tight truncate" style={{ color: color || 'var(--eth-ink)' }}>{value}</p>
+      </div>
     </div>
   )
-  const FieldLabel = ({ children }) => <p className="text-[11px] font-semibold tracking-wide uppercase mb-1.5" style={{ color: 'var(--eth-muted)' }}>{children}</p>
+  const FieldLabel = ({ children, error }) => <p className="text-[11px] font-semibold tracking-wide uppercase mb-1.5 flex items-center gap-1.5" style={{ color: error ? '#f87171' : 'var(--eth-muted)' }}>{children}{error && <span className="normal-case font-medium tracking-normal">— {error}</span>}</p>
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl">
-      <button onClick={() => go('admin', { tab: 'profiles' })} className="flex items-center gap-1 text-sm mb-6 transition-colors" style={{ color: 'var(--eth-muted)' }} onMouseEnter={e => e.currentTarget.style.color = 'var(--eth-ink)'} onMouseLeave={e => e.currentTarget.style.color = 'var(--eth-muted)'}><ChevronLeft className="w-4 h-4" /> Back to Imported Accounts</button>
+      <Back />
 
-      {profile && (
-        <Card className="p-6 mb-6" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
-          <div className="flex flex-col sm:flex-row gap-5 items-center sm:items-start">
-            <img src={profile.avatarUrl || profile.headshotUrl} className="w-24 h-24 rounded-2xl object-cover shrink-0" style={{ background: 'rgba(107,33,168,0.15)' }} alt="" />
-            <div className="flex-1 text-center sm:text-left min-w-0">
-              <div className="flex items-center gap-2 justify-center sm:justify-start flex-wrap">
-                <h1 className="text-2xl font-bold" style={{ color: 'var(--eth-ink)' }}>{profile.displayName}</h1>
-                {profile.hasVerifiedBadge && <BadgeCheck className="w-5 h-5 text-blue-400" />}
-                {profile.isBanned && <Badge className="bg-red-500/15 text-red-300 border-red-500/30">Banned</Badge>}
-                <Badge className={listed ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}>{listed ? 'Listed for sale' : 'Draft'}</Badge>
-              </div>
-              <p className="text-sm mt-0.5" style={{ color: 'var(--eth-muted)' }}>@{profile.name} · ID {profile.id}</p>
-              <p className="text-xs mt-1 flex items-center gap-1 justify-center sm:justify-start" style={{ color: 'var(--eth-muted)' }}><Calendar className="w-3 h-3" /> Joined {new Date(profile.created).toLocaleDateString()}</p>
+      {/* ---- Account overview header ---- */}
+      <Card className="p-5 sm:p-6 mb-5 overflow-hidden" style={{ background: 'linear-gradient(160deg, rgba(107,33,168,0.14), var(--eth-night1) 60%)', borderColor: 'var(--eth-gold-dim)' }}>
+        <div className="flex flex-col sm:flex-row gap-5 items-center sm:items-start">
+          <ImgOrIcon src={profile?.avatarUrl || profile?.headshotUrl || account.imageUrl} icon={User} className="w-20 h-20 rounded-2xl shrink-0 ring-1 ring-white/10" />
+          <div className="flex-1 text-center sm:text-left min-w-0">
+            <div className="flex items-center gap-2 justify-center sm:justify-start flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-bold truncate max-w-full" style={{ color: 'var(--eth-ink)' }}>{profile?.displayName || account.title || 'Untitled account'}</h1>
+              {profile?.hasVerifiedBadge && <BadgeCheck className="w-5 h-5 text-blue-400 shrink-0" />}
+              {profile?.isBanned && <Badge className="bg-red-500/15 text-red-300 border-red-500/30 shrink-0">Roblox-banned</Badge>}
+              <Badge className={`shrink-0 ${sMeta.cls}`}>{sMeta.label}</Badge>
+              {account.price > 0 && <Badge className="shrink-0 bg-white/5 border-white/10" style={{ color: 'var(--eth-gold)' }}>{usd(account.price)}</Badge>}
+            </div>
+            <div className="flex items-center gap-x-3 gap-y-1 justify-center sm:justify-start flex-wrap mt-1.5 text-sm" style={{ color: 'var(--eth-muted)' }}>
+              {profile && <span>@{profile.name}</span>}
+              <span className="inline-flex items-center gap-1">ID {profile?.id || account.robloxUserId || '—'}
+                {(profile?.id || account.robloxUserId) && <button onClick={() => copyText(String(profile?.id || account.robloxUserId), 'User ID copied')} className="hover:text-[var(--eth-ink)] transition-colors" title="Copy user ID"><Copy className="w-3 h-3" /></button>}
+              </span>
+              {profile?.created && <span className="inline-flex items-center gap-1"><Calendar className="w-3 h-3" /> Joined {new Date(profile.created).toLocaleDateString()}</span>}
+              <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" /> Imported {timeAgo(account.createdAt)}</span>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2.5 mt-5">
-            <StatChip label="Total RAP" value={totalRap.toLocaleString()} color="var(--eth-teal)" />
-            <StatChip label="Limiteds" value={limiteds.length} />
-            <StatChip label="Items" value={items.length} />
-            <StatChip label="Game Passes" value={gamepasses.length} />
+          <div className="flex gap-2 shrink-0">
+            {(profile?.id || account.robloxUserId) && <Button variant="outline" size="sm" className="border-white/10" onClick={() => window.open(`https://www.roblox.com/users/${profile?.id || account.robloxUserId}/profile`, '_blank', 'noopener,noreferrer')}><ExternalLink className="w-3.5 h-3.5 mr-1.5" /> View on Roblox</Button>}
+            <Button variant="outline" size="icon" className="border-red-500/20 text-red-400 hover:bg-red-500/10 hover:text-red-300 shrink-0" onClick={() => setDeleteOpen(true)} title="Delete account"><Trash2 className="w-4 h-4" /></Button>
           </div>
+        </div>
+      </Card>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent className="bg-[#12101f] border-white/10 text-slate-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this imported account?</AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">This permanently deletes "{account.title || profile?.displayName}" and its stored credentials. This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-white/10 text-slate-200 hover:bg-white/5 hover:text-white">Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={remove} className="bg-red-600 hover:bg-red-500 text-white">Delete permanently</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {profile ? (
+        <>
+          {/* ---- Stats ---- */}
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-3 mb-5">
+            <StatChip icon={Coins} label="Total RAP" value={totalRap.toLocaleString()} color="var(--eth-teal)" />
+            <StatChip icon={TrendingUp} label="12-mo trend" value={trend == null ? '—' : `${trend >= 0 ? '+' : ''}${trend.toFixed(1)}%`} color={trend == null ? undefined : trend >= 0 ? '#34d399' : '#f87171'} />
+            <StatChip icon={Gem} label="Limiteds" value={limiteds.length} />
+            <StatChip icon={Package} label="Items" value={items.length} />
+            <StatChip icon={Gamepad2} label="Game passes" value={gamepasses.length} />
+          </div>
+
+          {/* ---- RAP history ---- */}
+          {hist.length > 1 && (
+            <Card className="p-4 sm:p-5 mb-5" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+              <p className="font-bold text-sm flex items-center gap-2 mb-3" style={{ color: 'var(--eth-ink)' }}><TrendingUp className="w-4 h-4 text-emerald-400" /> Total RAP history <span className="font-normal text-xs" style={{ color: 'var(--eth-muted)' }}>· last 12 months{rapHist?.tracked ? ` · top ${rapHist.tracked} holdings` : ''}</span></p>
+              <div className="h-40 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={hist.map(h => ({ ...h, label: monthLabel(h.month) }))} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+                    <defs><linearGradient id="acctRapFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.5} /><stop offset="95%" stopColor="#10b981" stopOpacity={0} /></linearGradient></defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={48} tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v} />
+                    <RTooltip contentStyle={{ background: '#12101f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#e2e8f0' }} labelStyle={{ color: '#94a3b8' }} formatter={(v) => [`${Number(v).toLocaleString()} RAP`, 'Total RAP']} />
+                    <Area type="monotone" dataKey="rap" stroke="#10b981" strokeWidth={2.5} fill="url(#acctRapFill)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          )}
+        </>
+      ) : (
+        <Card className="p-6 mb-5 flex items-center gap-3" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+          <Info className="w-5 h-5 shrink-0" style={{ color: 'var(--eth-muted)' }} />
+          <p className="text-sm" style={{ color: 'var(--eth-muted)' }}>This account was added manually and has no Roblox inventory snapshot to browse.</p>
         </Card>
       )}
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2">
-          <ProfileInventoryTabs limiteds={limiteds} items={items} gamepasses={gamepasses} />
+          {profile
+            ? <AccountInventoryBrowser limiteds={limiteds} items={items} gamepasses={gamepasses} />
+            : <Card className="p-10" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}><InventoryEmpty text="No inventory to show for a manually-added account." /></Card>}
         </div>
 
-        <Card className="p-5 h-fit" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
-          <h3 className="font-bold flex items-center gap-2 mb-4" style={{ color: 'var(--eth-ink)' }}><Tag className="w-4 h-4" style={{ color: 'var(--eth-gold)' }} /> List for sale</h3>
-
-          <div className="space-y-3">
-            <div><FieldLabel>Title</FieldLabel><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="e.g. OG 2015 Account" className="bg-black/30 border-white/10" /></div>
-            <div><FieldLabel>Description</FieldLabel><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Optional" className="bg-black/30 border-white/10" /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><FieldLabel>Price (USD)</FieldLabel><Input value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="0.00" type="number" className="bg-black/30 border-white/10" /></div>
-              <div><FieldLabel>Image URL</FieldLabel><Input value={form.imageUrl} onChange={e => setForm({ ...form, imageUrl: e.target.value })} placeholder="Defaults to avatar" className="bg-black/30 border-white/10" /></div>
-            </div>
+        {/* ---- Listing panel ---- */}
+        <Card className="p-5 h-fit lg:sticky lg:top-20" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold flex items-center gap-2" style={{ color: 'var(--eth-ink)' }}><Tag className="w-4 h-4" style={{ color: 'var(--eth-gold)' }} /> Listing</h3>
+            <Badge className={sMeta.cls}>{sMeta.label}</Badge>
           </div>
 
-          <div className="mt-5 pt-4 border-t space-y-3" style={{ borderColor: 'rgba(107,33,168,0.3)' }}>
-            <p className="text-xs font-semibold flex items-center gap-1.5" style={{ color: 'var(--eth-muted)' }}><Lock className="w-3.5 h-3.5" /> Login credentials — delivered on /claim</p>
-            <div className="p-3 rounded-lg space-y-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(107,33,168,0.2)' }}>
-              <div className="grid grid-cols-2 gap-3">
-                <div><FieldLabel>Username</FieldLabel><Input value={form.credentials.username} onChange={e => setForm({ ...form, credentials: { ...form.credentials, username: e.target.value } })} placeholder="Roblox username" className="bg-black/30 border-white/10" /></div>
-                <div><FieldLabel>Password</FieldLabel><Input value={form.credentials.password} onChange={e => setForm({ ...form, credentials: { ...form.credentials, password: e.target.value } })} placeholder="Password" className="bg-black/30 border-white/10" /></div>
+          {!canEdit && (
+            <div className="mb-4 p-3 rounded-lg text-xs flex items-start gap-2" style={{ background: 'rgba(56,189,248,0.08)', border: '1px solid rgba(56,189,248,0.2)', color: '#7dd3fc' }}>
+              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>This account is {sMeta.label.toLowerCase()}{account.claimOrderNumber ? ` — order #${account.claimOrderNumber}` : ''}. Editing is disabled.</span>
+            </div>
+          )}
+
+          <fieldset disabled={!canEdit || saving} className="space-y-3 disabled:opacity-60">
+            <div><FieldLabel error={errors.title}>Title</FieldLabel><Input value={form.title} onChange={e => { setForm({ ...form, title: e.target.value }); setErrors(er => ({ ...er, title: undefined })) }} placeholder="e.g. OG 2015 Account" className="bg-black/30 border-white/10" /></div>
+            <div><FieldLabel>Price (USD)</FieldLabel>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold" style={{ color: 'var(--eth-muted)' }}>$</span>
+                <Input value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="0.00" type="number" className="bg-black/30 border-white/10 pl-6 text-lg font-bold" style={{ color: 'var(--eth-gold)' }} />
               </div>
-              <div><FieldLabel>Email</FieldLabel><Input value={form.credentials.email} onChange={e => setForm({ ...form, credentials: { ...form.credentials, email: e.target.value } })} placeholder="Optional" className="bg-black/30 border-white/10" /></div>
-              <div><FieldLabel>Notes</FieldLabel><Textarea value={form.credentials.notes} onChange={e => setForm({ ...form, credentials: { ...form.credentials, notes: e.target.value } })} placeholder="Recovery info, optional" className="bg-black/30 border-white/10" /></div>
             </div>
+            <div><FieldLabel>Description</FieldLabel><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Optional — shown on the public listing" className="bg-black/30 border-white/10" rows={3} /></div>
+            <div><FieldLabel>Image URL</FieldLabel><Input value={form.imageUrl} onChange={e => setForm({ ...form, imageUrl: e.target.value })} placeholder="Defaults to Roblox avatar" className="bg-black/30 border-white/10" /></div>
+          </fieldset>
+
+          <div className="mt-5 pt-4 border-t" style={{ borderColor: 'rgba(107,33,168,0.3)' }}>
+            <button onClick={() => setCredOpen(v => !v)} className="w-full flex items-center justify-between text-xs font-semibold" style={{ color: 'var(--eth-muted)' }}>
+              <span className="flex items-center gap-1.5"><Lock className="w-3.5 h-3.5" /> Login credentials — delivered on /claim</span>
+              <ChevronLeft className={`w-3.5 h-3.5 transition-transform ${credOpen ? '-rotate-90' : 'rotate-180'}`} />
+            </button>
+            {credOpen && (
+              <fieldset disabled={!canEdit || saving} className="mt-3 p-3 rounded-lg space-y-3 disabled:opacity-60" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(107,33,168,0.2)' }}>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><FieldLabel error={errors.username}>Username</FieldLabel><Input value={form.credentials.username} onChange={e => setCreds('username', e.target.value)} placeholder="Roblox username" className="bg-black/30 border-white/10" /></div>
+                  <div>
+                    <FieldLabel error={errors.password}>Password</FieldLabel>
+                    <div className="relative">
+                      <Input type={showPassword ? 'text' : 'password'} value={form.credentials.password} onChange={e => setCreds('password', e.target.value)} placeholder="Password" className="bg-black/30 border-white/10 pr-9" />
+                      <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors" style={{ color: 'var(--eth-muted)' }} tabIndex={-1}>{showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}</button>
+                    </div>
+                  </div>
+                </div>
+                <div><FieldLabel>Email</FieldLabel><Input value={form.credentials.email} onChange={e => setCreds('email', e.target.value)} placeholder="Optional" className="bg-black/30 border-white/10" /></div>
+                <div><FieldLabel>Notes</FieldLabel><Textarea value={form.credentials.notes} onChange={e => setCreds('notes', e.target.value)} placeholder="Recovery info, optional" className="bg-black/30 border-white/10" rows={2} /></div>
+              </fieldset>
+            )}
           </div>
 
-          <div className="flex flex-col gap-2 mt-5 pt-4 border-t" style={{ borderColor: 'rgba(107,33,168,0.3)' }}>
-            {listed
-              ? <Button disabled={saving} onClick={() => save({ status: 'draft' })} variant="outline" className="border-amber-500/30 text-amber-300 hover:bg-amber-500/10">Unlist</Button>
-              : <Button disabled={saving} onClick={() => save({ status: 'available' })} className="font-semibold border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>{saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'List for sale'}</Button>}
-            <Button disabled={saving} onClick={() => save()} variant="outline" className="border-white/10">{saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save draft'}</Button>
-            <Button disabled={saving} onClick={remove} variant="ghost" className="text-red-400 hover:text-red-300 hover:bg-red-500/10"><Trash2 className="w-4 h-4 mr-1" /> Delete account</Button>
+          {canEdit && (
+            <div className="flex flex-col gap-2 mt-5 pt-4 border-t" style={{ borderColor: 'rgba(107,33,168,0.3)' }}>
+              {listed
+                ? <Button disabled={saving} onClick={() => save({ status: 'draft' })} variant="outline" className="border-amber-500/30 text-amber-300 hover:bg-amber-500/10">{saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unlist'}</Button>
+                : <Button disabled={saving} onClick={() => save({ status: 'available' })} className="font-semibold border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>{saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'List for sale'}</Button>}
+              <Button disabled={saving} onClick={() => save()} variant="outline" className="border-white/10">{saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save draft'}</Button>
+            </div>
+          )}
+
+          <div className="mt-5 pt-4 border-t text-xs space-y-1" style={{ borderColor: 'rgba(107,33,168,0.3)', color: 'var(--eth-muted)' }}>
+            <p>Imported {timeAgo(account.createdAt)}</p>
+            {account.updatedAt && <p>Last updated {timeAgo(account.updatedAt)}</p>}
+            {status === 'sold' && account.claimOrderNumber && <p>Assigned to order #{account.claimOrderNumber}{account.assignedAt ? ` · ${timeAgo(account.assignedAt)}` : ''}</p>}
+            {status === 'claimed' && <p>Claimed {account.claimedAt ? timeAgo(account.claimedAt) : ''}</p>}
           </div>
         </Card>
       </div>
