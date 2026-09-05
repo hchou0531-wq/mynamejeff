@@ -81,14 +81,19 @@ function useApi() {
       throw new Error(e.name === 'AbortError' ? 'Request timed out — please try again' : 'Network error — check your connection')
     }
     clearTimeout(to)
+    // Read as text FIRST, always — res.json() on a non-JSON or malformed body throws and
+    // the old `.catch(() => ({}))` swallowed it into an empty object with the actual body
+    // gone, so a non-JSON error page (a host/CDN block page, a proxy timeout page, a route
+    // that genuinely sent no body) logged as a useless `{}` with nothing left to diagnose.
     const ct = res.headers.get('content-type') || ''
+    const rawText = await res.text().catch(() => '')
     let data = {}
-    if (ct.includes('application/json')) data = await res.json().catch(() => ({}))
-    else { const t = await res.text().catch(() => ''); if (t && res.ok) return t; data = {} }
+    if (rawText) { try { data = JSON.parse(rawText) } catch { /* not JSON — data stays {} , rawText carries it below */ } }
     if (!res.ok) {
-      // Full response body, not just data.error — fields like emailDelivery/dbUnavailable
-      // that a toast never shows are often the actual signal for why a request failed.
-      console.error(`[api] ${method} ${path} → HTTP ${res.status}`, data)
+      // Prefer the parsed body (fields like emailDelivery/dbUnavailable a toast never shows
+      // are often the real signal) but fall back to the raw text/content-type when parsing
+      // found nothing, so this is never just an empty `{}`.
+      console.error(`[api] ${method} ${path} → HTTP ${res.status}`, Object.keys(data).length ? data : { contentType: ct || '(none)', rawBody: rawText ? rawText.slice(0, 500) : '(empty response body)' })
       const err = new Error(data.error || `Request failed (HTTP ${res.status})`)
       err.status = res.status
       // Surfaced by the API when the database itself is unreachable, so callers can show a
@@ -96,6 +101,8 @@ function useApi() {
       err.dbUnavailable = !!data.dbUnavailable
       throw err
     }
+    // A successful non-JSON response is returned as plain text (unchanged from before).
+    if (!ct.includes('application/json') && rawText) return rawText
     return data
   }, [])
 }
