@@ -1360,9 +1360,34 @@ async function handleRoute(request, { params }) {
       if (!t) return json({ error: 'Not found' }, 404)
       return json({ toycode: { id: t.id, title: t.title, description: t.description, price: t.price, imageUrl: t.imageUrl, stock: t.stock ?? 1 } })
     }
+    // Summary fields the storefront card/detail views need (join date, RAP, item counts,
+    // whether the listing includes the account's original email) WITHOUT ever exposing
+    // `credentials` itself — that only ever appears in admin-authenticated responses,
+    // delivered for real post-purchase via /claim.
+    function accountPublicSummary(a) {
+      const profile = a.snapshot?.profile || null
+      const limiteds = a.snapshot?.limiteds || []
+      return {
+        username: profile?.name || null,
+        robloxUserId: profile?.id || a.robloxUserId || null,
+        hasVerifiedBadge: !!profile?.hasVerifiedBadge,
+        joinedAt: profile?.created || null,
+        totalRap: limiteds.reduce((s, it) => s + (Number(it.rap) || 0), 0),
+        limitedsCount: limiteds.length,
+        itemsCount: (a.snapshot?.items || []).length,
+        gamepassesCount: (a.snapshot?.gamepasses?.passes || []).length,
+        // A real selling point for an account listing, surfaced as a boolean only — the
+        // address itself stays inside `credentials`, never sent to a non-admin caller.
+        hasEmailOnFile: !!(a.credentials?.email && a.credentials.email.trim()),
+      }
+    }
     if (route === '/accounts' && method === 'GET') {
       const items = await db.collection('accounts').find({ status: 'available' }).sort({ createdAt: -1 }).toArray()
-      return json({ accounts: items.map(a => ({ id: a.id, title: a.title, description: a.description, price: a.price, imageUrl: a.imageUrl || a.snapshot?.profile?.headshotUrl || a.snapshot?.profile?.avatarUrl || '' })) })
+      return json({ accounts: items.map(a => ({
+        id: a.id, title: a.title, description: a.description, price: a.price,
+        imageUrl: a.imageUrl || a.snapshot?.profile?.headshotUrl || a.snapshot?.profile?.avatarUrl || '',
+        ...accountPublicSummary(a),
+      })) })
     }
     // Public listing page for one imported account — the Roblox profile + inventory
     // snapshot taken at import time, minus `credentials` (that only ever appears in
@@ -1375,6 +1400,7 @@ async function handleRoute(request, { params }) {
         imageUrl: a.imageUrl || a.snapshot?.profile?.headshotUrl || a.snapshot?.profile?.avatarUrl || '',
         profile: a.snapshot?.profile || null,
         limiteds: a.snapshot?.limiteds || [], items: a.snapshot?.items || [], gamepasses: a.snapshot?.gamepasses?.passes || [],
+        hasEmailOnFile: accountPublicSummary(a).hasEmailOnFile,
       } })
     }
 
@@ -1461,7 +1487,11 @@ async function handleRoute(request, { params }) {
       if (!settings?.salesBySource && settings?.totalSales) sbs.other = settings.totalSales // legacy migrate for display
       const totalSales = ['ebay', 'eldorado', 'sellauth', 'g2g', 'playerauctions', 'other'].reduce((a, k) => a + (Number(sbs[k]) || 0), 0)
       const reviews = await db.collection('reviews').find({}).sort({ pinned: -1, createdAt: -1 }).toArray()
-      return json({ totalSales, salesBySource: sbs, reviews: reviews.map(clean) })
+      // Real count, not a display placeholder — the Profiles storefront's "N sold this
+      // week" trust line reads this instead of hardcoding a number, so it can never say
+      // something that isn't true of this store's actual order history.
+      const soldLast7Days = await db.collection('orders').countDocuments({ status: 'paid', paidAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } })
+      return json({ totalSales, salesBySource: sbs, reviews: reviews.map(clean), soldLast7Days })
     }
 
     // ---------- DISCORD BOT: claim delivery (toy code / account) ----------

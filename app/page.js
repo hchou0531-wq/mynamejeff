@@ -17,7 +17,7 @@ import { Sheet, SheetContent, SheetTitle, SheetClose } from '@/components/ui/she
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog'
 import {
   Search, ShoppingCart, Store, Star, Sparkles, Heart, Bell, Plus, LayoutGrid,
-  Shield, TrendingUp, Clock, Tag, ChevronLeft, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
+  Shield, TrendingUp, Clock, Tag, ChevronLeft, ChevronRight, LogOut, User, CheckCircle2, Flag, Loader2, Gem, Package, Zap, Bitcoin, Trash2, Gamepad2, Info, BadgeCheck, Calendar, Coins,
   AlertTriangle, ExternalLink, Crown, ShieldCheck, Lock, ThumbsUp, ThumbsDown, MessageSquare, Upload, Quote, Ticket, X, Send, RefreshCw, Menu, Copy, Eye, EyeOff
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts'
@@ -1178,6 +1178,21 @@ function BrowseView({ api, go, initialCategory, initialSearch }) {
 }
 
 
+// Shared by the admin's account-management header (imports/edits a listing) and the
+// public account/profile page (buys one) — both show the same at-a-glance stats, just
+// with different data behind them and different actions around them.
+function StatChip({ icon: Icon, label, value, color }) {
+  return (
+    <div className="flex-1 min-w-[110px] px-3.5 py-2.5 rounded-xl flex items-center gap-2.5" style={{ background: 'rgba(107,33,168,0.10)', border: '1px solid rgba(107,33,168,0.25)' }}>
+      {Icon && <Icon className="w-4 h-4 shrink-0" style={{ color: color || 'var(--eth-muted)' }} />}
+      <div className="min-w-0">
+        <p className="text-[10px] font-semibold tracking-wide uppercase truncate" style={{ color: 'var(--eth-muted)' }}>{label}</p>
+        <p className="text-base font-bold leading-tight truncate" style={{ color: color || 'var(--eth-ink)' }}>{value}</p>
+      </div>
+    </div>
+  )
+}
+
 function DigitalGoodCard({ good, requireAuth, onOpen, onBuy }) {
   const outOfStock = typeof good.stock === 'number' && good.stock <= 0
   // Rarity tiers are a Roblox-item concept (price-banded collectible scarcity) — they don't
@@ -1210,6 +1225,106 @@ function DigitalGoodCard({ good, requireAuth, onOpen, onBuy }) {
           <p className="text-lg font-bold" style={{ color: 'var(--eth-gold)' }}>{usd(good.price)}</p>
           <Button size="sm" disabled={outOfStock} onClick={buy} className="font-semibold h-8 rounded-lg border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>{outOfStock ? 'Sold Out' : 'Buy Now'}</Button>
         </div>
+      </div>
+    </Card>
+  )
+}
+
+// Distinct from DigitalGoodCard: an account listing carries real Roblox-account signal
+// (join date, RAP, item counts, whether original email access is included) that a toy
+// code or a single collectible never has, so it earns its own card rather than
+// overloading the generic one with account-only branches.
+// Purely local "save for later" bookmark — no backend. The site's real wishlist
+// (POST /wishlist) is keyed to the `items` collection and its GET hydrates by looking
+// items up there specifically, so it can't hold an account id without a matching backend
+// change to that read path; a "second button" here that silently failed to show up in the
+// wishlist tab later would be worse than not having one. This is a real, working
+// substitute scoped to what a browser can do on its own: it persists per-device and needs
+// no account, at the cost of not following you to a different device.
+const SAVED_PROFILES_KEY = 'eth_saved_profiles'
+function readSavedProfiles() {
+  try { return JSON.parse(localStorage.getItem(SAVED_PROFILES_KEY) || '[]') } catch { return [] }
+}
+function useSavedProfile(id) {
+  const [saved, setSaved] = useState(false)
+  useEffect(() => { setSaved(readSavedProfiles().includes(id)) }, [id])
+  const toggle = (e) => {
+    e.stopPropagation()
+    try {
+      const list = readSavedProfiles()
+      const isSaved = list.includes(id)
+      const next = isSaved ? list.filter(x => x !== id) : [...list, id]
+      localStorage.setItem(SAVED_PROFILES_KEY, JSON.stringify(next))
+      setSaved(!isSaved)
+      toast.success(isSaved ? 'Removed from saved' : 'Saved for later')
+    } catch { toast.error('Could not save — your browser is blocking local storage.') }
+  }
+  return [saved, toggle]
+}
+function AccountCard({ account, requireAuth, onOpen, onBuy }) {
+  const buy = (e) => { e.stopPropagation(); requireAuth(() => onBuy ? onBuy() : toast.info('DM our Discord team with this profile to complete your purchase.')) }
+  const [saved, toggleSaved] = useSavedProfile(account.id)
+  const joinedYear = account.joinedAt ? new Date(account.joinedAt).getFullYear() : null
+  const totalItems = (account.itemsCount || 0) + (account.limitedsCount || 0)
+  const [intPart, decPart] = Number(account.price || 0).toFixed(2).split('.')
+  const StatCell = ({ icon: Icon, label, value, color }) => (
+    <div className="rounded-md border px-2 py-1.5 min-w-0" style={{ borderColor: 'rgba(107,33,168,0.25)' }}>
+      <p className="flex items-center gap-1 uppercase font-semibold tracking-wide truncate" style={{ color: 'var(--eth-muted)', fontSize: 9 }}><Icon className="w-2.5 h-2.5 shrink-0" /> {label}</p>
+      <p className="font-bold mt-0.5 truncate text-[11px]" style={{ color: color || 'var(--eth-ink)' }}>{value}</p>
+    </div>
+  )
+  return (
+    <Card onClick={onOpen} className={`group relative overflow-hidden border transition-colors ${onOpen ? 'cursor-pointer' : ''}`}
+      style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--eth-gold)' }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--eth-gold-dim)' }}>
+      <div className="p-3 flex gap-3">
+        {/* Left: avatar panel, name banner on top — mirrors the reference's name-over-render layout */}
+        <div className="w-[38%] shrink-0 rounded-lg overflow-hidden border flex flex-col" style={{ borderColor: 'var(--eth-gold-dim)', background: 'rgba(0,0,0,0.25)' }}>
+          <p className="text-center text-xs font-black uppercase tracking-wide py-1.5 px-1 truncate" style={{ color: 'var(--eth-ink)' }}>{account.title}</p>
+          <div className="flex-1 aspect-square" style={{ background: 'radial-gradient(circle, rgba(107,33,168,0.18), transparent 70%)' }}>
+            <ImgOrIcon src={account.imageUrl} icon={User} className="w-full h-full group-hover:scale-[1.04] transition-transform duration-300" />
+          </div>
+        </div>
+
+        {/* Right: name chip + 2x2 stat grid + view-items link */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="rounded-lg border px-3 py-1.5 mb-2" style={{ borderColor: 'rgba(107,33,168,0.3)', background: 'rgba(107,33,168,0.08)' }}>
+            <p className="font-semibold tracking-widest uppercase flex items-center gap-1" style={{ color: 'var(--eth-muted)', fontSize: 9 }}><User className="w-2.5 h-2.5" /> Name</p>
+            <p className="text-sm font-black truncate flex items-center gap-1 mt-0.5" style={{ color: 'var(--eth-gold)' }}>
+              {account.username || account.title}
+              {account.hasVerifiedBadge && <BadgeCheck className="w-3.5 h-3.5 text-blue-400 shrink-0" />}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <StatCell icon={Calendar} label="Join Date" value={joinedYear || '—'} />
+            <StatCell icon={Coins} label="RAP" value={(account.totalRap || 0).toLocaleString()} color="var(--eth-teal)" />
+            <StatCell icon={account.hasEmailOnFile ? ShieldCheck : Lock} label="Email" value={account.hasEmailOnFile ? 'Included' : 'Not incl.'} color={account.hasEmailOnFile ? '#34d399' : undefined} />
+            <StatCell icon={Package} label="Items" value={totalItems.toLocaleString()} />
+          </div>
+
+          {onOpen && (
+            <button onClick={e => { e.stopPropagation(); onOpen() }} className="mt-1.5 flex-1 flex items-center justify-center gap-1 text-[10px] font-semibold py-1 rounded-md border transition-colors hover:bg-white/5" style={{ borderColor: 'rgba(107,33,168,0.3)', color: 'var(--eth-lavender)' }}>
+              View {totalItems} item{totalItems === 1 ? '' : 's'} <ChevronRight className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {account.robloxUserId && (
+        <div className="mx-3 mb-2 px-3 py-1.5 rounded-lg flex items-center justify-between" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--eth-gold-dim)' }}>
+          <span className="font-bold tracking-widest uppercase" style={{ color: 'var(--eth-muted)', fontSize: 9 }}>ID</span>
+          <span className="text-sm font-black" style={{ color: 'var(--eth-ink)' }}>{Number(account.robloxUserId).toLocaleString()}</span>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 px-3 pb-3 pt-1 border-t" style={{ borderColor: 'rgba(107,33,168,0.25)' }}>
+        <p className="text-xl font-black shrink-0" style={{ color: 'var(--eth-gold)' }}>${intPart}<span className="text-xs align-top">.{decPart}</span></p>
+        <Button onClick={buy} className="flex-1 font-bold h-9 rounded-lg border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>Buy Now</Button>
+        <Button onClick={toggleSaved} variant="outline" size="icon" className="h-9 w-9 shrink-0 border-white/10" title={saved ? 'Remove from saved' : 'Save for later'}>
+          <Heart className="w-4 h-4" style={saved ? { fill: '#f472b6', color: '#f472b6' } : undefined} />
+        </Button>
       </div>
     </Card>
   )
@@ -1329,23 +1444,112 @@ function ToyCodeDetailView({ api, go, id, requireAuth, user }) {
 }
 
 const PROFILES_PAGE_SIZE = 12
+// Shared by AccountInventoryBrowser's three tabs (Limiteds/Items paginate more densely
+// than Game Passes since their tiles are much smaller — a real inventory can carry 100+
+// limiteds/items but rarely more than a handful of game passes).
+const INVENTORY_PAGE_SIZE = 24
+const GAMEPASS_PAGE_SIZE = 10
+// Every number and pill in this header reads from data the store actually has — no
+// placeholder rating, no fabricated "N sold this week", no filter category the current
+// inventory can't back. See the review thread for why: a fixed marketing number here
+// would eventually just be a lie sitting on the page.
+function ProfilesTrustBar({ api, go }) {
+  const [data, setData] = useState(null)
+  useEffect(() => { api('/reviews').then(setData).catch(() => {}) }, [api])
+  if (!data) return null
+  const reviews = data.reviews || []
+  const positives = reviews.filter(r => r.rating === 'positive').length
+  const pct = reviews.length ? positives / reviews.length : 1
+  const stars = (pct * 5)
+  const hasSignal = reviews.length > 0 || (data.totalSales || 0) > 0
+  if (!hasSignal) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-5 text-sm" style={{ color: 'var(--eth-muted)' }}>
+      <span className="inline-flex items-center gap-0.5">
+        {Array.from({ length: 5 }).map((_, i) => <Star key={i} className="w-4 h-4" style={{ color: 'var(--eth-gold)', fill: i < Math.round(stars) ? 'var(--eth-gold)' : 'none' }} />)}
+      </span>
+      <span>Rated {stars.toFixed(1)}/5{reviews.length ? ` from ${reviews.length} review${reviews.length === 1 ? '' : 's'}` : ''}</span>
+      {data.totalSales > 0 && <span>· {data.totalSales.toLocaleString()}+ sold</span>}
+      {data.soldLast7Days > 0 && (
+        <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> {data.soldLast7Days} sold this week</span>
+      )}
+      <button onClick={() => go('reviews')} className="underline underline-offset-2 hover:text-[var(--eth-ink)] transition-colors">Read Reviews</button>
+    </div>
+  )
+}
 function AccountsStoreView({ api, go, requireAuth }) {
   const [goods, setGoods] = useState([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState('all')
   useEffect(() => { api('/accounts').then(d => setGoods(d.accounts || [])).catch(() => {}).finally(() => setLoading(false)) }, [api])
-  const totalPages = Math.max(1, Math.ceil(goods.length / PROFILES_PAGE_SIZE))
+  useEffect(() => { setPage(1) }, [search, filter])
+
+  // Pills are generated from what's actually in `goods` — a year pill only ever appears
+  // for a join-year that a real listed account has, so "browse by year" can never show an
+  // empty result for a year nothing in the store matches.
+  const years = Array.from(new Set(goods.map(g => g.joinedAt ? new Date(g.joinedAt).getFullYear() : null).filter(Boolean))).sort((a, b) => a - b)
+  const hasNoEmail = goods.some(g => g.hasEmailOnFile === false)
+  const filters = [
+    ['all', 'All Profiles'], ['3letter', '3 Letter Names'], ['4letter', '4 Letter Names'], ['5letter', '5 Letter Names'],
+    ...years.map(y => [`year:${y}`, `${y} Accounts`]),
+    ...(hasNoEmail ? [['noemail', 'No Email Included']] : []),
+  ]
+  const matchesFilter = (g) => {
+    if (filter === 'all') return true
+    if (filter === '3letter') return (g.username || '').length === 3
+    if (filter === '4letter') return (g.username || '').length === 4
+    if (filter === '5letter') return (g.username || '').length === 5
+    if (filter === 'noemail') return g.hasEmailOnFile === false
+    if (filter.startsWith('year:')) return g.joinedAt && new Date(g.joinedAt).getFullYear() === Number(filter.slice(5))
+    return true
+  }
+  const q = search.trim().toLowerCase()
+  const filtered = goods
+    .filter(g => !q || (g.title || '').toLowerCase().includes(q) || (g.username || '').toLowerCase().includes(q))
+    .filter(matchesFilter)
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PROFILES_PAGE_SIZE))
   const pageClamped = Math.min(page, totalPages)
-  const pageGoods = goods.slice((pageClamped - 1) * PROFILES_PAGE_SIZE, pageClamped * PROFILES_PAGE_SIZE)
+  const pageGoods = filtered.slice((pageClamped - 1) * PROFILES_PAGE_SIZE, pageClamped * PROFILES_PAGE_SIZE)
   const goToPage = (p) => { setPage(Math.min(Math.max(1, p), totalPages)); window.scrollTo({ top: document.getElementById('profiles-grid')?.offsetTop - 100 || 0, behavior: 'smooth' }) }
+
+  const steps = [
+    ['Pick a profile', User], ['Pay securely with crypto', Bitcoin], ['Delivered via Discord', MessageSquare],
+  ]
+
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="font-cinzel font-bold text-3xl mb-1 flex items-center gap-2.5 tracking-wide" style={{ color: 'var(--eth-ink)' }}><User className="w-7 h-7" style={{ color: 'var(--eth-gold)' }} /> Profiles</h1>
-      <p className="mb-8" style={{ color: 'var(--eth-muted)' }}>Roblox accounts for sale, delivered via Discord after purchase.</p>
+      <h1 className="font-cinzel font-bold text-3xl mb-1.5 flex items-center gap-2.5 tracking-wide" style={{ color: 'var(--eth-ink)' }}><User className="w-7 h-7" style={{ color: 'var(--eth-gold)' }} /> Profiles</h1>
+      <ProfilesTrustBar api={api} go={go} />
+
+      <div className="relative mb-4">
+        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--eth-muted)' }} />
+        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search username..." className="pl-11 h-12 bg-black/30 border-white/10 rounded-xl" />
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-6">
+        {filters.map(([v, l]) => (
+          <button key={v} onClick={() => setFilter(v)} className="px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors"
+            style={filter === v ? { background: 'rgba(192,132,252,0.15)', color: 'var(--eth-teal)', borderColor: 'rgba(192,132,252,0.35)' } : { color: 'var(--eth-muted)', borderColor: 'var(--eth-gold-dim)' }}>{l}</button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-8 px-4 py-3 rounded-xl" style={{ background: 'rgba(107,33,168,0.08)', border: '1px solid rgba(107,33,168,0.25)' }}>
+        {steps.map(([label, Icon], i) => (
+          <span key={label} className="inline-flex items-center gap-2 text-sm" style={{ color: 'var(--eth-muted)' }}>
+            <span className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0" style={{ background: 'var(--eth-gold)', color: 'var(--eth-night1)' }}>{i + 1}</span>
+            <Icon className="w-4 h-4 shrink-0" style={{ color: 'var(--eth-lavender)' }} /> {label}
+          </span>
+        ))}
+      </div>
+
       <div id="profiles-grid">
-        {loading ? <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="aspect-[4/5] rounded-xl bg-white/[0.03] animate-pulse" />)}</div>
+        {loading ? <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="aspect-[16/10] rounded-xl bg-white/[0.03] animate-pulse" />)}</div>
           : goods.length === 0 ? <div className="py-24 text-center" style={{ color: 'var(--eth-muted)' }}><User className="w-12 h-12 mx-auto mb-3 opacity-40" />No profiles available right now. Check back soon.</div>
-          : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{pageGoods.map(g => <DigitalGoodCard key={g.id} good={g} requireAuth={requireAuth} onOpen={go ? () => go('profile', { id: g.id }) : undefined} />)}</div>}
+          : filtered.length === 0 ? <div className="py-24 text-center" style={{ color: 'var(--eth-muted)' }}><Search className="w-12 h-12 mx-auto mb-3 opacity-40" />No profiles match your search or filter.</div>
+          : <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">{pageGoods.map(g => <AccountCard key={g.id} account={g} requireAuth={requireAuth} onOpen={go ? () => go('profile', { id: g.id }) : undefined} />)}</div>}
       </div>
       <Pager page={pageClamped} totalPages={totalPages} onPage={goToPage} />
     </div>
@@ -1356,63 +1560,119 @@ function ProfileDetailView({ api, go, id, requireAuth }) {
   const [account, setAccount] = useState(null)
   const [notFound, setNotFound] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [rapHist, setRapHist] = useState(null)
   useEffect(() => {
-    setLoading(true); setNotFound(false)
-    api(`/accounts/${id}`).then(d => setAccount(d.account)).catch(() => setNotFound(true)).finally(() => setLoading(false))
+    setLoading(true); setNotFound(false); setRapHist(null)
+    api(`/accounts/${id}`).then(d => {
+      setAccount(d.account)
+      const uid = d.account?.profile?.id
+      if (uid) api(`/profile/${uid}/rap-history`).then(setRapHist).catch(() => setRapHist({ totalRap: 0, history: [] }))
+    }).catch(() => setNotFound(true)).finally(() => setLoading(false))
   }, [api, id])
 
-  if (loading) return <div className="container mx-auto px-4 py-8"><div className="max-w-4xl mx-auto animate-pulse space-y-4"><div className="aspect-[3/1] rounded-2xl bg-white/[0.03]" /><div className="h-6 w-1/2 bg-white/[0.03] rounded" /><div className="h-4 w-1/3 bg-white/[0.03] rounded" /></div></div>
+  const Back = () => (
+    <button onClick={() => go('profiles-store')} className="flex items-center gap-1 text-sm mb-6 transition-colors" style={{ color: 'var(--eth-muted)' }} onMouseEnter={e => e.currentTarget.style.color = 'var(--eth-ink)'} onMouseLeave={e => e.currentTarget.style.color = 'var(--eth-muted)'}><ChevronLeft className="w-4 h-4" /> Back to Profiles</button>
+  )
+
+  if (loading) {
+    const skeletonStyle = { background: 'var(--eth-night1)', border: '1px solid var(--eth-gold-dim)' }
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-6xl">
+        <Back />
+        <div className="rounded-xl animate-pulse p-6 mb-5" style={skeletonStyle}>
+          <div className="flex gap-5 items-center"><div className="w-20 h-20 rounded-2xl bg-white/5 shrink-0" /><div className="flex-1 space-y-3 py-1"><div className="h-5 w-48 rounded bg-white/5" /><div className="h-3 w-56 rounded bg-white/5" /></div></div>
+        </div>
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-3 mb-6">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="rounded-xl animate-pulse h-16 sm:flex-1 sm:min-w-[110px]" style={skeletonStyle} />)}</div>
+      </div>
+    )
+  }
   if (notFound || !account) return <div className="container mx-auto px-4 py-24 text-center" style={{ color: 'var(--eth-muted)' }}><User className="w-12 h-12 mx-auto mb-3 opacity-40" />This profile is no longer available.<div className="mt-4"><Button variant="outline" className="border-white/10" onClick={() => go('profiles-store')}>Back to Profiles</Button></div></div>
 
+  // Mirrors AdminAccountView's read side (header, StatChip row, RAP-history graph, and
+  // the same AccountInventoryBrowser the admin uses) exactly, minus the "Listing" panel
+  // (the editable title/price/credentials form) and the delete control — those manage the
+  // listing, and a buyer never does that. The price + Buy Now block below stands in for
+  // that panel's one buyer-relevant purpose.
   const { profile, limiteds = [], items = [], gamepasses = [] } = account
   const totalRap = limiteds.reduce((s, it) => s + (Number(it.rap) || 0), 0)
+  const hist = rapHist?.history || []
+  const first = hist.length ? hist[0].rap : null
+  const last = hist.length ? hist[hist.length - 1].rap : null
+  const trend = (first != null && last != null && first > 0) ? ((last - first) / first) * 100 : null
+  const monthLabel = (m) => { const [y, mo] = m.split('-'); return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) }
   const buy = () => requireAuth(() => toast.info('DM our Discord team with this profile to complete your purchase.'))
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl">
-      <button onClick={() => go('profiles-store')} className="flex items-center gap-1 text-sm mb-6 transition-colors" style={{ color: 'var(--eth-muted)' }} onMouseEnter={e => e.currentTarget.style.color = 'var(--eth-ink)'} onMouseLeave={e => e.currentTarget.style.color = 'var(--eth-muted)'}><ChevronLeft className="w-4 h-4" /> Back to Profiles</button>
+      <Back />
 
-      <Card className="p-6 mb-6" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+      <Card className="p-5 sm:p-6 mb-5 overflow-hidden" style={{ background: 'linear-gradient(160deg, rgba(107,33,168,0.14), var(--eth-night1) 60%)', borderColor: 'var(--eth-gold-dim)' }}>
         <div className="flex flex-col sm:flex-row gap-5 items-center sm:items-start">
-          <img src={account.imageUrl} className="w-24 h-24 rounded-2xl object-cover shrink-0" style={{ background: 'rgba(107,33,168,0.15)' }} alt="" />
+          <ImgOrIcon src={account.imageUrl} icon={User} className="w-20 h-20 rounded-2xl shrink-0 ring-1 ring-white/10" />
           <div className="flex-1 text-center sm:text-left min-w-0">
             <div className="flex items-center gap-2 justify-center sm:justify-start flex-wrap">
-              <h1 className="text-2xl font-bold" style={{ color: 'var(--eth-ink)' }}>{account.title}</h1>
-              {profile?.hasVerifiedBadge && <BadgeCheck className="w-5 h-5 text-blue-400" />}
+              <h1 className="text-xl sm:text-2xl font-bold truncate max-w-full" style={{ color: 'var(--eth-ink)' }}>{account.title}</h1>
+              {profile?.hasVerifiedBadge && <BadgeCheck className="w-5 h-5 text-blue-400 shrink-0" />}
+              {profile?.isBanned && <Badge className="bg-red-500/15 text-red-300 border-red-500/30 shrink-0">Roblox-banned</Badge>}
             </div>
-            {profile && <p className="text-sm mt-0.5" style={{ color: 'var(--eth-muted)' }}>@{profile.name} · ID {profile.id}</p>}
-            {profile?.created && <p className="text-xs mt-1 flex items-center gap-1 justify-center sm:justify-start" style={{ color: 'var(--eth-muted)' }}><Calendar className="w-3 h-3" /> Joined {new Date(profile.created).toLocaleDateString()}</p>}
+            <div className="flex items-center gap-x-3 gap-y-1 justify-center sm:justify-start flex-wrap mt-1.5 text-sm" style={{ color: 'var(--eth-muted)' }}>
+              {profile && <span>@{profile.name}</span>}
+              {(profile?.id) && (
+                <span className="inline-flex items-center gap-1">ID {profile.id}
+                  <button onClick={() => copyText(String(profile.id), 'User ID copied')} className="hover:text-[var(--eth-ink)] transition-colors" title="Copy user ID"><Copy className="w-3 h-3" /></button>
+                </span>
+              )}
+              {profile?.created && <span className="inline-flex items-center gap-1"><Calendar className="w-3 h-3" /> Joined {new Date(profile.created).toLocaleDateString()}</span>}
+            </div>
             {account.description && <p className="text-sm mt-3" style={{ color: 'var(--eth-muted)' }}>{account.description}</p>}
           </div>
-          <div className="w-full sm:w-56 shrink-0 p-4 rounded-xl text-center" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-            <p className="text-3xl font-bold" style={{ color: 'var(--eth-gold)' }}>{usd(account.price)}</p>
-            <Button onClick={buy} className="w-full mt-3 font-semibold border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>Buy Now</Button>
-            <p className="text-[11px] mt-2" style={{ color: 'var(--eth-muted)' }}>Delivered via Discord after purchase</p>
+          <div className="flex flex-col items-stretch gap-2 w-full sm:w-56 shrink-0">
+            {profile?.id && <Button variant="outline" size="sm" className="border-white/10" onClick={() => window.open(`https://www.roblox.com/users/${profile.id}/profile`, '_blank', 'noopener,noreferrer')}><ExternalLink className="w-3.5 h-3.5 mr-1.5" /> View on Roblox</Button>}
+            <div className="p-4 rounded-xl text-center" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
+              <p className="text-3xl font-bold" style={{ color: 'var(--eth-gold)' }}>{usd(account.price)}</p>
+              <Button onClick={buy} className="w-full mt-3 font-semibold border-0" style={{ background: 'linear-gradient(90deg, var(--eth-gold), var(--eth-lavender))', color: 'var(--eth-night1)' }}>Buy Now</Button>
+              <p className="text-[11px] mt-2" style={{ color: 'var(--eth-muted)' }}>Delivered via Discord after purchase</p>
+            </div>
           </div>
         </div>
-        {profile && (
-          <div className="flex flex-wrap gap-2.5 mt-5">
-            <div className="flex-1 min-w-[110px] px-4 py-3 rounded-lg" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-              <p className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--eth-muted)' }}>Total RAP</p>
-              <p className="text-lg font-bold mt-0.5" style={{ color: 'var(--eth-teal)' }}>{totalRap.toLocaleString()}</p>
-            </div>
-            <div className="flex-1 min-w-[110px] px-4 py-3 rounded-lg" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-              <p className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--eth-muted)' }}>Limiteds</p>
-              <p className="text-lg font-bold mt-0.5" style={{ color: 'var(--eth-ink)' }}>{limiteds.length}</p>
-            </div>
-            <div className="flex-1 min-w-[110px] px-4 py-3 rounded-lg" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-              <p className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--eth-muted)' }}>Items</p>
-              <p className="text-lg font-bold mt-0.5" style={{ color: 'var(--eth-ink)' }}>{items.length}</p>
-            </div>
-            <div className="flex-1 min-w-[110px] px-4 py-3 rounded-lg" style={{ background: 'rgba(107,33,168,0.12)', border: '1px solid rgba(107,33,168,0.25)' }}>
-              <p className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--eth-muted)' }}>Game Passes</p>
-              <p className="text-lg font-bold mt-0.5" style={{ color: 'var(--eth-ink)' }}>{gamepasses.length}</p>
-            </div>
-          </div>
-        )}
       </Card>
 
-      <ProfileInventoryTabs limiteds={limiteds} items={items} gamepasses={gamepasses} />
+      {profile ? (
+        <>
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-3 mb-5">
+            <StatChip icon={Coins} label="Total RAP" value={totalRap.toLocaleString()} color="var(--eth-teal)" />
+            <StatChip icon={TrendingUp} label="12-mo trend" value={trend == null ? '—' : `${trend >= 0 ? '+' : ''}${trend.toFixed(1)}%`} color={trend == null ? undefined : trend >= 0 ? '#34d399' : '#f87171'} />
+            <StatChip icon={Gem} label="Limiteds" value={limiteds.length} />
+            <StatChip icon={Package} label="Items" value={items.length} />
+            <StatChip icon={Gamepad2} label="Game passes" value={gamepasses.length} />
+          </div>
+
+          {hist.length > 1 && (
+            <Card className="p-4 sm:p-5 mb-5" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+              <p className="font-bold text-sm flex items-center gap-2 mb-3" style={{ color: 'var(--eth-ink)' }}><TrendingUp className="w-4 h-4 text-emerald-400" /> Total RAP history <span className="font-normal text-xs" style={{ color: 'var(--eth-muted)' }}>· last 12 months{rapHist?.tracked ? ` · top ${rapHist.tracked} holdings` : ''}</span></p>
+              <div className="h-40 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={hist.map(h => ({ ...h, label: monthLabel(h.month) }))} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+                    <defs><linearGradient id="profileRapFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.5} /><stop offset="95%" stopColor="#10b981" stopOpacity={0} /></linearGradient></defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={48} tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v} />
+                    <RTooltip contentStyle={{ background: '#12101f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#e2e8f0' }} labelStyle={{ color: '#94a3b8' }} formatter={(v) => [`${Number(v).toLocaleString()} RAP`, 'Total RAP']} />
+                    <Area type="monotone" dataKey="rap" stroke="#10b981" strokeWidth={2.5} fill="url(#profileRapFill)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          )}
+
+          <AccountInventoryBrowser limiteds={limiteds} items={items} gamepasses={gamepasses} />
+        </>
+      ) : (
+        <Card className="p-6 flex items-center gap-3" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
+          <Info className="w-5 h-5 shrink-0" style={{ color: 'var(--eth-muted)' }} />
+          <p className="text-sm" style={{ color: 'var(--eth-muted)' }}>This listing has no Roblox inventory snapshot to browse.</p>
+        </Card>
+      )}
     </div>
   )
 }
@@ -2517,56 +2777,8 @@ function AdminView({ api, user, go, cfg, initialTab }) {
 
 // Shared by the admin import-review page and the public profile page — same inventory,
 // same look, so a listing reads identically whether you're the seller or the buyer.
-function ProfileInventoryTabs({ limiteds, items, gamepasses }) {
-  return (
-    <Tabs defaultValue="limiteds">
-      <TabsList className="bg-black/30 border" style={{ borderColor: 'var(--eth-gold-dim)' }}>
-        <TabsTrigger value="limiteds">Limiteds ({limiteds.length})</TabsTrigger>
-        <TabsTrigger value="items">Items ({items.length})</TabsTrigger>
-        <TabsTrigger value="gamepasses"><Gamepad2 className="w-3.5 h-3.5 mr-1" /> Game Passes ({gamepasses.length})</TabsTrigger>
-      </TabsList>
-      <TabsContent value="limiteds" className="mt-4">
-        {limiteds.length === 0 ? <Empty text="No public limiteds found (or inventory was private at import time)." />
-          : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              {limiteds.map(it => (
-                <Card key={it.assetId} className="overflow-hidden" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
-                  <div className="aspect-square bg-white/[0.03]"><img src={it.imageUrl} className="w-full h-full object-cover" alt="" /></div>
-                  <div className="p-3"><p className="text-sm font-semibold truncate" style={{ color: 'var(--eth-ink)' }}>{it.name}</p>
-                    <div className="flex justify-between items-center mt-1"><span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--eth-muted)' }}>RAP</span><span className="text-sm font-bold" style={{ color: 'var(--eth-teal)' }}>{it.rap != null ? Number(it.rap).toLocaleString() : '—'}</span></div>
-                    {it.serialNumber && <p className="text-[10px] mt-0.5" style={{ color: 'var(--eth-gold)' }}>#{it.serialNumber}</p>}
-                  </div>
-                </Card>
-              ))}
-            </div>}
-      </TabsContent>
-      <TabsContent value="items" className="mt-4">
-        {items.length === 0 ? <Empty text="No public regular items found (offsale/UGC/animations included — or inventory was private at import time)." />
-          : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              {items.map(it => (
-                <Card key={it.assetId} className="overflow-hidden" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
-                  <div className="aspect-square bg-white/[0.03]"><img src={it.imageUrl} className="w-full h-full object-cover" alt="" /></div>
-                  <div className="p-2"><p className="text-xs font-semibold truncate" style={{ color: 'var(--eth-ink)' }}>{it.name}</p><p className="text-[10px]" style={{ color: 'var(--eth-muted)' }}>{it.category}</p></div>
-                </Card>
-              ))}
-            </div>}
-      </TabsContent>
-      <TabsContent value="gamepasses" className="mt-4">
-        {gamepasses.length === 0 ? <Empty text="No public game passes found." />
-          : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              {gamepasses.map(p => (
-                <Card key={p.id} className="p-3 flex items-center gap-3" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
-                  <img src={p.imageUrl} className="w-12 h-12 rounded-lg object-cover bg-white/5" alt="" />
-                  <div className="flex-1 min-w-0"><p className="text-sm font-semibold truncate" style={{ color: 'var(--eth-ink)' }}>{p.name}</p><p className="text-xs truncate" style={{ color: 'var(--eth-muted)' }}>{p.universe}</p></div>
-                  <span className="text-sm font-bold shrink-0" style={{ color: 'var(--eth-teal)' }}>{p.price != null ? `${p.price} R$` : 'Free'}</span>
-                </Card>
-              ))}
-            </div>}
-      </TabsContent>
-    </Tabs>
-  )
-}
-
-// ---- small shared bits for the admin account (imported profile) page ----
+// ---- small shared bits for the account (imported Roblox profile) pages — used by both
+// the admin's management view and the buyer-facing listing page ----
 function ImgOrIcon({ src, alt = '', icon: Icon = Package, className = '' }) {
   const [err, setErr] = useState(false)
   return (
@@ -2625,6 +2837,13 @@ function AccountInventoryBrowser({ limiteds, items, gamepasses }) {
   const [limFilter, setLimFilter] = useState('all')
   const [itemCat, setItemCat] = useState('All')
   const [sort, setSort] = useState('rap_desc')
+  const [limPage, setLimPage] = useState(1)
+  const [itemPage, setItemPage] = useState(1)
+  const [passPage, setPassPage] = useState(1)
+  // Any change to what's being shown invalidates whatever page you were on — otherwise
+  // narrowing a 200-item inventory down to 3 search results could leave you stranded on
+  // "page 4 of 1", looking at an empty grid for no visible reason.
+  useEffect(() => { setLimPage(1); setItemPage(1); setPassPage(1) }, [search, sort, limFilter, itemCat])
 
   const itemCats = ['All', ...Array.from(new Set(items.map(i => i.category).filter(Boolean))).sort()]
   const q = search.trim().toLowerCase()
@@ -2642,11 +2861,28 @@ function AccountInventoryBrowser({ limiteds, items, gamepasses }) {
     .filter(p => matches(p.name, p.id))
     .sort((a, b) => sort === 'rap_asc' ? (a.price || 0) - (b.price || 0) : sort === 'name_asc' ? String(a.name).localeCompare(String(b.name)) : (b.price || 0) - (a.price || 0))
 
+  const limTotalPages = Math.max(1, Math.ceil(filteredLimiteds.length / INVENTORY_PAGE_SIZE))
+  const limPageClamped = Math.min(limPage, limTotalPages)
+  const pagedLimiteds = filteredLimiteds.slice((limPageClamped - 1) * INVENTORY_PAGE_SIZE, limPageClamped * INVENTORY_PAGE_SIZE)
+  const itemTotalPages = Math.max(1, Math.ceil(filteredItems.length / INVENTORY_PAGE_SIZE))
+  const itemPageClamped = Math.min(itemPage, itemTotalPages)
+  const pagedItems = filteredItems.slice((itemPageClamped - 1) * INVENTORY_PAGE_SIZE, itemPageClamped * INVENTORY_PAGE_SIZE)
+  const passTotalPages = Math.max(1, Math.ceil(filteredPasses.length / GAMEPASS_PAGE_SIZE))
+  const passPageClamped = Math.min(passPage, passTotalPages)
+  const pagedPasses = filteredPasses.slice((passPageClamped - 1) * GAMEPASS_PAGE_SIZE, passPageClamped * GAMEPASS_PAGE_SIZE)
+
   const sortOptions = tab === 'gamepasses'
     ? [['rap_desc', 'Price: High to Low'], ['rap_asc', 'Price: Low to High'], ['name_asc', 'Name (A–Z)']]
     : tab === 'items'
     ? [['name_asc', 'Name (A–Z)'], ['rap_desc', 'Category']]
     : [['rap_desc', 'RAP: High to Low'], ['rap_asc', 'RAP: Low to High'], ['name_asc', 'Name (A–Z)']]
+
+  // Fixed-size tracks (not `1fr` columns) so a thumbnail stays the same physical size no
+  // matter how wide the surrounding page is — only the COLUMN COUNT flexes to fill the
+  // available width. A proportional grid stretched these into oversized tiles on a wide
+  // viewport; this caps them while still reflowing responsively.
+  const limitedsGridStyle = { gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 128px))' }
+  const itemsGridStyle = { gridTemplateColumns: 'repeat(auto-fill, minmax(104px, 104px))' }
 
   return (
     <Card className="p-4 sm:p-5" style={{ background: 'var(--eth-night1)', borderColor: 'var(--eth-gold-dim)' }}>
@@ -2678,7 +2914,10 @@ function AccountInventoryBrowser({ limiteds, items, gamepasses }) {
           </div>
           {limiteds.length === 0 ? <InventoryEmpty icon={Gem} text="No public limiteds found. Inventory may have been private at import time." />
             : filteredLimiteds.length === 0 ? <InventoryEmpty text="No limiteds match your search or filter." />
-            : <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3.5">{filteredLimiteds.map(it => <LimitedCard key={it.assetId} item={it} />)}</div>}
+            : <>
+                <div className="grid gap-3.5" style={limitedsGridStyle}>{pagedLimiteds.map(it => <LimitedCard key={it.assetId} item={it} />)}</div>
+                <Pager page={limPageClamped} totalPages={limTotalPages} onPage={setLimPage} />
+              </>}
         </TabsContent>
 
         <TabsContent value="items" className="mt-0">
@@ -2692,13 +2931,19 @@ function AccountInventoryBrowser({ limiteds, items, gamepasses }) {
           )}
           {items.length === 0 ? <InventoryEmpty text="No public regular items found. Inventory may have been private at import time." />
             : filteredItems.length === 0 ? <InventoryEmpty text="No items match your search or filter." />
-            : <div className="grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-6 gap-3">{filteredItems.map(it => <ItemThumbCard key={it.assetId} item={it} />)}</div>}
+            : <>
+                <div className="grid gap-3" style={itemsGridStyle}>{pagedItems.map(it => <ItemThumbCard key={it.assetId} item={it} />)}</div>
+                <Pager page={itemPageClamped} totalPages={itemTotalPages} onPage={setItemPage} />
+              </>}
         </TabsContent>
 
         <TabsContent value="gamepasses" className="mt-0">
           {gamepasses.length === 0 ? <InventoryEmpty icon={Gamepad2} text="No public game passes found." />
             : filteredPasses.length === 0 ? <InventoryEmpty text="No game passes match your search." />
-            : <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{filteredPasses.map(p => <GamePassCard key={p.id} pass={p} />)}</div>}
+            : <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{pagedPasses.map(p => <GamePassCard key={p.id} pass={p} />)}</div>
+                <Pager page={passPageClamped} totalPages={passTotalPages} onPage={setPassPage} />
+              </>}
         </TabsContent>
       </Tabs>
     </Card>
@@ -2829,15 +3074,6 @@ function AdminAccountView({ api, go, id, user }) {
   const canEdit = status === 'draft' || status === 'available'
   const monthLabel = (m) => { const [y, mo] = m.split('-'); return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) }
 
-  const StatChip = ({ icon: Icon, label, value, color }) => (
-    <div className="flex-1 min-w-[110px] px-3.5 py-2.5 rounded-xl flex items-center gap-2.5" style={{ background: 'rgba(107,33,168,0.10)', border: '1px solid rgba(107,33,168,0.25)' }}>
-      {Icon && <Icon className="w-4 h-4 shrink-0" style={{ color: color || 'var(--eth-muted)' }} />}
-      <div className="min-w-0">
-        <p className="text-[10px] font-semibold tracking-wide uppercase truncate" style={{ color: 'var(--eth-muted)' }}>{label}</p>
-        <p className="text-base font-bold leading-tight truncate" style={{ color: color || 'var(--eth-ink)' }}>{value}</p>
-      </div>
-    </div>
-  )
   const FieldLabel = ({ children, error }) => <p className="text-[11px] font-semibold tracking-wide uppercase mb-1.5 flex items-center gap-1.5" style={{ color: error ? '#f87171' : 'var(--eth-muted)' }}>{children}{error && <span className="normal-case font-medium tracking-normal">— {error}</span>}</p>
 
   return (
