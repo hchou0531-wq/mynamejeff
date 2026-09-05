@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 import QRCode from 'qrcode'
 import dns from 'dns'
-import { sendEmail, verificationEmailTemplate, emailConfigured, emailConfigProblems } from '@/lib/email'
+import { sendEmail, verificationEmailTemplate, welcomeEmailTemplate, emailConfigured, emailConfigProblems } from '@/lib/email'
 
 // Some networks only advertise an IPv6 link-local DNS server, which Node's resolver
 // can't query (ECONNREFUSED on SRV lookups for the mongodb+srv:// connection string).
@@ -82,10 +82,21 @@ async function connectToMongo() {
             { unverifiedExpiresAt: 1 },
             { expireAfterSeconds: 0, partialFilterExpression: { emailVerified: false } }
           ),
-          // One active verification per user — regenerating a code upserts this same doc,
-          // which is what "invalidate the previous code" means in practice.
-          db.collection('emailVerifications').createIndex({ userId: 1 }, { unique: true }),
-          db.collection('emailVerifications').createIndex({ email: 1 }),
+          // One active verification per EMAIL ADDRESS (not per account) — every read of this
+          // collection looks up by email (that's all a client can supply), so the write side
+          // has to be keyed the same way. It used to be keyed by userId: upsert on {userId}
+          // meant an abandoned signup that later got TTL-reaped from `users` left its
+          // emailVerifications doc behind forever (nothing ever deletes it), and a second
+          // signup with that same email — a brand new userId — inserted a SECOND doc instead
+          // of overwriting the first. findOne({email}) in /auth/verify-email had no
+          // tiebreaker between them, so it could silently hand back the stale orphan's hash
+          // instead of the code that was just emailed — every correct code rejected with the
+          // same generic "Invalid or expired" a wrong one gets. Deduped once below before this
+          // index is created, since a duplicate already sitting in the collection would make
+          // index creation itself fail.
+          dedupeEmailVerifications(db).catch(() => {}).then(() =>
+            db.collection('emailVerifications').createIndex({ email: 1 }, { unique: true })
+          ),
           db.collection('securityEvents').createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
           // Only ever populated when TEST_MODE=true (test harness only) — short TTL
           // so a captured code can't outlive the test run even in that mode.
@@ -958,6 +969,24 @@ function verifyVerificationCode(code, stored) {
     return hashBuf.length === testHash.length && crypto.timingSafeEqual(hashBuf, testHash)
   } catch { return false }
 }
+// One-time-per-cold-start self-heal for docs left behind by the old userId-keyed upsert
+// (see the emailVerifications index comment in connectToMongo): collapses any email that
+// still has more than one pending-verification doc down to just the most recently issued
+// one, so the unique index on `email` can be created and findOne({email}) can never again
+// return an orphaned, unrelated code for that address. Cheap once caught up — the aggregate
+// returns empty and this is a no-op on every startup after the first.
+async function dedupeEmailVerifications(db) {
+  const dupes = await db.collection('emailVerifications').aggregate([
+    { $group: { _id: '$email', ids: { $push: '$_id' }, count: { $sum: 1 } } },
+    { $match: { count: { $gt: 1 } } },
+  ]).toArray()
+  for (const { ids } of dupes) {
+    const docs = await db.collection('emailVerifications')
+      .find({ _id: { $in: ids } }).sort({ lastSentAt: -1 }).toArray()
+    const staleIds = docs.slice(1).map(d => d._id)
+    if (staleIds.length) await db.collection('emailVerifications').deleteMany({ _id: { $in: staleIds } })
+  }
+}
 // Enforces both the minimum gap between sends and the hourly cap for one email address.
 // The cooldown is checked directly against the verification doc's lastSentAt, since a
 // fixed-window counter can't express "N seconds since the last one" precisely at window
@@ -980,14 +1009,18 @@ async function canSendVerificationEmail(db, email) {
   if (!rl.allowed) return { allowed: false, retryAfterSec: rl.retryAfterSec }
   return { allowed: true }
 }
-// Generates a fresh code, stores only its hash, and emails it. The upsert on `userId`
-// (unique-indexed) overwrites codeHash/attempts/expiresAt atomically, which is exactly
-// what "invalidate the previous code" means — the old hash is simply gone.
+// Generates a fresh code, stores only its hash, and emails it. The upsert is keyed on
+// `email` (unique-indexed) rather than userId — every reader of this collection looks a
+// pending verification up by email, since that's all a client can ever supply, so this is
+// the one doc per address they'll find. Overwrites codeHash/attempts/expiresAt/userId
+// atomically, which is exactly what "invalidate the previous code" means: the old hash is
+// simply gone, and if this email now belongs to a different account than last time, the doc
+// follows it rather than leaving a second, orphaned one behind.
 async function issueVerificationCode(db, userId, email, siteUrl) {
   const code = generateVerificationCode()
   const now = new Date()
   await db.collection('emailVerifications').updateOne(
-    { userId },
+    { email },
     {
       $set: {
         userId, email, codeHash: hashVerificationCode(code),
@@ -998,8 +1031,8 @@ async function issueVerificationCode(db, userId, email, siteUrl) {
     },
     { upsert: true }
   )
-  const { subject, html, text, attachments } = await verificationEmailTemplate(code, siteUrl)
-  const result = await sendEmail({ to: email, subject, html, text, attachments })
+  const { subject, html, text } = await verificationEmailTemplate(code, siteUrl)
+  const result = await sendEmail({ to: email, subject, html, text })
   if (TEST_MODE) {
     await db.collection('devEmailCaptures').updateOne(
       { email }, { $set: { email, code, createdAt: now } }, { upsert: true }
@@ -1704,12 +1737,12 @@ async function handleRoute(request, { params }) {
         return json(INVALID, 400)
       }
       if ((ev.attempts || 0) >= MAX_VERIFICATION_ATTEMPTS) {
-        await db.collection('emailVerifications').updateOne({ userId: ev.userId }, { $set: { expiresAt: new Date(0) } })
+        await db.collection('emailVerifications').updateOne({ _id: ev._id }, { $set: { expiresAt: new Date(0) } })
         await logSecurityEvent(db, 'verification_attempt_failed', { reason: 'max_attempts', userId: ev.userId })
         return json(INVALID, 400)
       }
       if (!verifyVerificationCode(code, ev.codeHash)) {
-        await db.collection('emailVerifications').updateOne({ userId: ev.userId }, { $inc: { attempts: 1 } })
+        await db.collection('emailVerifications').updateOne({ _id: ev._id }, { $inc: { attempts: 1 } })
         await logSecurityEvent(db, 'verification_attempt_failed', { reason: 'wrong_code', userId: ev.userId })
         return json(INVALID, 400)
       }
@@ -1718,7 +1751,7 @@ async function handleRoute(request, { params }) {
       // the second sees modifiedCount 0 and falls back to the same generic error, so an
       // account can never be activated or handed a session twice from one code.
       const claim = await db.collection('emailVerifications').updateOne(
-        { userId: ev.userId, verifiedAt: null },
+        { _id: ev._id, verifiedAt: null },
         { $set: { verifiedAt: new Date() } }
       )
       if (claim.modifiedCount !== 1) return json(INVALID, 400)
@@ -1728,6 +1761,12 @@ async function handleRoute(request, { params }) {
       if (!user) return json(INVALID, 400)
       await notify(db, user.id, 'Welcome to Ethereal! Browse the marketplace and pay securely with crypto.', 'success')
       await logSecurityEvent(db, 'verification_succeeded', { userId: user.id })
+      // Awaited (not fire-and-forget) because a serverless function can be frozen the
+      // instant its response is sent — an unawaited send here would race the runtime and
+      // often lose. sendEmail() never throws, so a failed welcome email can't block the
+      // session/account activation that already succeeded above.
+      const { subject: wSubject, html: wHtml, text: wText } = await welcomeEmailTemplate(publicSiteUrl(request))
+      await sendEmail({ to: user.email, subject: wSubject, html: wHtml, text: wText })
       return json({ token: await createSession(db, user.id), user: clean(user) })
     }
     if (route === '/auth/resend-verification' && method === 'POST') {
