@@ -998,8 +998,8 @@ async function issueVerificationCode(db, userId, email, siteUrl) {
     },
     { upsert: true }
   )
-  const { subject, html, text } = verificationEmailTemplate(code, siteUrl)
-  const result = await sendEmail({ to: email, subject, html, text })
+  const { subject, html, text, attachments } = await verificationEmailTemplate(code, siteUrl)
+  const result = await sendEmail({ to: email, subject, html, text, attachments })
   if (TEST_MODE) {
     await db.collection('devEmailCaptures').updateOne(
       { email }, { $set: { email, code, createdAt: now } }, { upsert: true }
