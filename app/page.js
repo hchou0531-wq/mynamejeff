@@ -64,6 +64,7 @@ function useApi() {
     const token = typeof window !== 'undefined' ? localStorage.getItem('rbx_token') : null
     const ctrl = new AbortController()
     const to = setTimeout(() => ctrl.abort(), 45000)
+    const method = (opts.method || 'GET').toUpperCase()
     let res
     try {
       res = await fetch(`/api${path}`, {
@@ -72,6 +73,11 @@ function useApi() {
       })
     } catch (e) {
       clearTimeout(to)
+      // Logged in full here — not just the toast's one-liner — so a failure (the email step
+      // is the recurring example) can be diagnosed straight from a pasted console screenshot
+      // instead of a back-and-forth reproducing it. Network/CORS-level failures never reach
+      // the response branch below, so they need their own log line.
+      console.error(`[api] ${method} ${path} → network error`, e)
       throw new Error(e.name === 'AbortError' ? 'Request timed out — please try again' : 'Network error — check your connection')
     }
     clearTimeout(to)
@@ -80,6 +86,9 @@ function useApi() {
     if (ct.includes('application/json')) data = await res.json().catch(() => ({}))
     else { const t = await res.text().catch(() => ''); if (t && res.ok) return t; data = {} }
     if (!res.ok) {
+      // Full response body, not just data.error — fields like emailDelivery/dbUnavailable
+      // that a toast never shows are often the actual signal for why a request failed.
+      console.error(`[api] ${method} ${path} → HTTP ${res.status}`, data)
       const err = new Error(data.error || `Request failed (HTTP ${res.status})`)
       err.status = res.status
       // Surfaced by the API when the database itself is unreachable, so callers can show a
@@ -780,6 +789,11 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
       const d = await api(path, { method: 'POST', body: JSON.stringify(body) })
       if (d.requiresTotp) { setNeedsTotp(true); setLoading(false); return }
       if (mode === 'signup') {
+        // Signup always answers 200 "check your email" — success or failure of the actual
+        // send is invisible in the UI by design (avoids leaking which emails are
+        // registered). Logging the raw response is the one place that invisible outcome
+        // (emailDelivery, message) is still inspectable when a code never arrives.
+        console.log('[signup] response', d)
         // Signup always answers with the same generic "check your email" message, whether
         // or not the account already existed — that's intentional (avoids leaking which
         // emails are registered), so this step just always moves on to code entry.
@@ -832,6 +846,7 @@ function AuthDialog({ open, setOpen, mode, setMode, api, onAuthed }) {
     setResendCooldown(RESEND_COOLDOWN_SECONDS)
     try {
       const d = await api('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: verifyEmail }) })
+      console.log('[resend-verification] response', d)
       if (d.emailDelivery === 'unavailable') {
         setEmailUnavailable(true)
         toast.error('Email delivery is not configured on the server — no code was sent.')
