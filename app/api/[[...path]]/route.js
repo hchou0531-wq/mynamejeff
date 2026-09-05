@@ -91,12 +91,9 @@ async function connectToMongo() {
           // of overwriting the first. findOne({email}) in /auth/verify-email had no
           // tiebreaker between them, so it could silently hand back the stale orphan's hash
           // instead of the code that was just emailed — every correct code rejected with the
-          // same generic "Invalid or expired" a wrong one gets. Deduped once below before this
-          // index is created, since a duplicate already sitting in the collection would make
-          // index creation itself fail.
-          dedupeEmailVerifications(db).catch(() => {}).then(() =>
-            db.collection('emailVerifications').createIndex({ email: 1 }, { unique: true })
-          ),
+          // same generic "Invalid or expired" a wrong one gets. Dedupe + the index swap this
+          // needs on an already-deployed database are both handled in one place:
+          migrateEmailVerificationIndexes(db),
           db.collection('securityEvents').createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
           // Only ever populated when TEST_MODE=true (test harness only) — short TTL
           // so a captured code can't outlive the test run even in that mode.
@@ -986,6 +983,44 @@ async function dedupeEmailVerifications(db) {
     const staleIds = docs.slice(1).map(d => d._id)
     if (staleIds.length) await db.collection('emailVerifications').deleteMany({ _id: { $in: staleIds } })
   }
+}
+// Moves an ALREADY-DEPLOYED database from the old userId-keyed shape to the email-keyed one.
+// This has to cope with indexes previous deploys already created, which a fresh database
+// (every local/CI run) never has — the reason this gap survived a green test suite:
+//   * `email_1` already exists as a NON-unique index. createIndex({email:1},{unique:true})
+//     generates the same auto name with different options, so Mongo rejects it outright with
+//     IndexOptionsConflict (86) rather than upgrading it. Swallowed by the caller's .catch(),
+//     that left production with no uniqueness at all — duplicates could silently return.
+//   * `userId_1` is still UNIQUE from the old keying. Now that a doc's userId legitimately
+//     changes when an address is re-registered under a new account, that index can throw
+//     E11000 on a perfectly ordinary code re-issue — which would abort issueVerificationCode
+//     before it ever calls sendEmail, i.e. no email, no error the user can see.
+async function migrateEmailVerificationIndexes(db) {
+  const col = db.collection('emailVerifications')
+  await dedupeEmailVerifications(db)
+  try {
+    await col.createIndex({ email: 1 }, { unique: true })
+  } catch (e) {
+    if (e?.code === 86 || e?.codeName === 'IndexOptionsConflict') {
+      await col.dropIndex('email_1')
+      await col.createIndex({ email: 1 }, { unique: true })
+    } else throw e
+  }
+  // Not needed any more (nothing queries this collection by userId) and actively harmful
+  // while unique — drop it rather than leave a latent E11000 in the send path.
+  await col.dropIndex('userId_1').catch(() => {})
+}
+// Rolls the last 24h of send outcomes up for the admin diagnostics panel. `failed` counting
+// anything above zero is the signal that the provider is rejecting mail even though the
+// config looks fine — the failure mode that otherwise only exists in a platform log line.
+async function emailSendStats(db) {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const [sent, failed, lastFailure] = await Promise.all([
+    db.collection('securityEvents').countDocuments({ type: 'verification_email_sent', createdAt: { $gte: since } }),
+    db.collection('securityEvents').countDocuments({ type: 'verification_email_send_failed', createdAt: { $gte: since } }),
+    db.collection('securityEvents').findOne({ type: 'verification_email_send_failed' }, { sort: { createdAt: -1 } }),
+  ])
+  return { sent, failed, lastFailureAt: lastFailure?.createdAt || null }
 }
 // Enforces both the minimum gap between sends and the hourly cap for one email address.
 // The cooldown is checked directly against the verification doc's lastSentAt, since a
@@ -2324,6 +2359,13 @@ async function handleRoute(request, { params }) {
           // Names the exact missing var(s) so "verification emails aren't arriving" is a
           // dashboard read rather than a log dig on the hosting platform.
           emailConfigured: emailConfigured(), emailMissingVars: emailConfigProblems(),
+          // Config being present only means a send was ATTEMPTED — it says nothing about
+          // whether the provider accepted it. A send rejected downstream (domain no longer
+          // verified, plan quota reached, key rotated) is invisible everywhere else: the
+          // caller always gets the same generic "a code has been sent", by design, so this
+          // is the one place the operator can tell "sending" from "sent". Counts come from
+          // the events the send path already writes.
+          emailSends24h: await emailSendStats(db),
           robloxEnabled: !!cfg.robloxEnabled, botOnline: !!cfg.botOnline, robloxBot: 'voIIium', dashboardSecretSet: !!process.env.ADMIN_DASHBOARD_SECRET
         } })
       }
