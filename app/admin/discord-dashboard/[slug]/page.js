@@ -541,6 +541,20 @@ export default function DiscordDashboardPage() {
                 </label>
               </Panel>
 
+              <Panel title="Email delivery" icon={Send}>
+                <p className="text-xs text-slate-400 mb-3">RESEND_API_KEY/EMAIL_FROM being set only means a send is attempted — it says nothing about whether Resend actually accepted it. This is the one place that gap is visible without digging through platform logs.</p>
+                <div className="grid gap-2">
+                  <SecretRow label="Email provider configured" ok={botCfg?.emailConfigured}
+                    note={botCfg?.emailConfigured ? 'RESEND_API_KEY and EMAIL_FROM are set' : `Missing: ${(botCfg?.emailMissingVars || []).join(', ') || 'unknown'}`} />
+                  <SecretRow label="Sends succeeded (last 24h)" ok={(botCfg?.emailSends24h?.sent || 0) > 0}
+                    note={String(botCfg?.emailSends24h?.sent ?? 0)} />
+                  <SecretRow label="Sends failed (last 24h)" ok={(botCfg?.emailSends24h?.failed || 0) === 0}
+                    note={botCfg?.emailSends24h?.failed
+                      ? `${botCfg.emailSends24h.failed} failed${botCfg.emailSends24h.lastFailureAt ? ' — last at ' + new Date(botCfg.emailSends24h.lastFailureAt).toLocaleString() : ''} — check Resend's dashboard for the rejection reason`
+                      : 'none'} />
+                </div>
+              </Panel>
+
               <Panel title="Secrets & keys" icon={KeyRound}>
                 <p className="text-xs text-slate-400 mb-3">Enter your Discord bot keys. The Roblox bot cookie is already configured server-side.</p>
                 <div className="grid sm:grid-cols-2 gap-3">
